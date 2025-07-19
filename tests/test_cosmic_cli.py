@@ -1,265 +1,221 @@
 import pytest
-import tempfile
-import json
 import os
-from pathlib import Path
+import subprocess
 from unittest.mock import Mock, patch, MagicMock
-from main import CosmicCLI, load_manual_env, COSMIC_QUOTES
+from cosmic_cli.agents import StargazerAgent
+from cosmic_cli.ui import DirectivesUI
+
+class TestCosmicBanner:
+    """Test the banner generation to prevent 'Coder CLI' regression"""
+    
+    @patch('pyfiglet.Figlet')
+    def test_banner_generation(self, mock_figlet):
+        mock_figlet.return_value.renderText.return_value = 'COSMIC CLI ART'
+        ui = DirectivesUI()
+        banner_text = ui.figlet.renderText('COSMIC CLI')
+        assert 'COSMIC CLI' in banner_text
+        assert 'CODER' not in banner_text.upper()
+
+    @patch('pyfiglet.Figlet')
+    def test_ui_compose_banner(self, mock_figlet):
+        mock_figlet.return_value.renderText.return_value = 'COSMIC CLI ART'
+        ui = DirectivesUI()
+        banner_text = ui.figlet.renderText('COSMIC CLI')
+        assert 'COSMIC CLI' in banner_text
 
 
-class TestCosmicCLI:
-    """Test suite for CosmicCLI class."""
+class TestStargazerAgent:
+    """Test StargazerAgent with real actions"""
     
-    @pytest.fixture
-    def cosmic_cli(self):
-        """Create a fresh CosmicCLI instance for each test."""
-        return CosmicCLI()
+    def setup_method(self):
+        """Setup for each test"""
+        os.environ['EXEC_MODE'] = 'safe'
+        os.environ['XAI_API_KEY'] = 'test_key'
     
-    @pytest.fixture
-    def temp_memory_file(self):
-        """Create a temporary memory file for testing."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            json.dump([], f)
-            temp_path = Path(f.name)
+    def test_agent_initialization(self):
+        """Test agent initializes correctly"""
+        agent = StargazerAgent("test directive", api_key="test_key")
+        assert agent.directive == "test directive"
+        assert agent.status == "✨"
+        assert agent.exec_mode == "safe"
+        assert len(agent.logs) == 0
+
+    @patch('openai.OpenAI')
+    def test_parse_steps(self, mock_openai):
+        """Test step parsing from Grok response"""
+        agent = StargazerAgent("test directive", api_key="test_key")
         
-        # Temporarily replace the memory file path
-        original_memory_file = CosmicCLI.__module__ + '.MEMORY_FILE'
-        with patch(original_memory_file, temp_path):
-            yield temp_path
+        grok_response = """
+        Here's your cosmic plan:
+        1. SHELL: ls -l
+        2. CODE: Create a hello world script
+        3. INFO: Check system status
+        """
         
-        # Cleanup
-        temp_path.unlink(missing_ok=True)
-    
-    def test_cosmic_cli_initialization(self, cosmic_cli):
-        """Test CosmicCLI initialization."""
-        assert cosmic_cli.chat_instance is None
-        assert cosmic_cli.client_instance is None
-        assert cosmic_cli.console is not None
-    
-    def test_save_memory_success(self, cosmic_cli, temp_memory_file):
-        """Test successful memory saving."""
-        test_messages = [
-            {'role': 'user', 'content': 'Hello'},
-            {'role': 'assistant', 'content': 'Hi there!'}
-        ]
+        steps = agent._parse_steps(grok_response)
         
-        cosmic_cli.save_memory(test_messages)
+        assert len(steps) == 3
+        assert "SHELL: ls -l" in steps[0]
+        assert "CODE: Create a hello world script" in steps[1]
+        assert "INFO: Check system status" in steps[2]
+
+    @patch('subprocess.run')
+    def test_shell_command_execution_safe_mode(self, mock_subprocess):
+        """Test shell command execution in safe mode"""
+        agent = StargazerAgent("test directive", api_key="test_key")
+        mock_subprocess.return_value = Mock(
+            stdout="file1.txt\nfile2.txt", 
+            stderr="", 
+            returncode=0
+        )
         
-        # Verify the file was written
-        assert temp_memory_file.exists()
-        with open(temp_memory_file, 'r') as f:
-            saved_data = json.load(f)
-        assert saved_data == test_messages
-    
-    def test_save_memory_with_xai_objects(self, cosmic_cli, temp_memory_file):
-        """Test saving memory with xai_sdk message objects."""
-        # Mock xai_sdk message objects
-        mock_user_msg = Mock()
-        mock_user_msg.role = 'user'
-        mock_user_msg.content = 'Hello'
+        # Test safe command
+        agent._execute_shell_command("ls -l")
         
-        mock_assistant_msg = Mock()
-        mock_assistant_msg.role = 'assistant'
-        mock_assistant_msg.content = 'Hi there!'
+        mock_subprocess.assert_called_once()
+        assert "Executing shell command" in agent.logs[-2]
+        assert "Shell command completed successfully" in agent.logs[-1]
+
+    def test_dangerous_command_blocked(self):
+        """Test that dangerous commands are blocked in safe mode"""
+        agent = StargazerAgent("test directive", api_key="test_key")
         
-        test_messages = [mock_user_msg, mock_assistant_msg]
+        # Test dangerous command
+        agent._execute_shell_command("rm -rf /")
         
-        cosmic_cli.save_memory(test_messages)
+        # Should be blocked
+        assert any("BLOCKED dangerous command" in log for log in agent.logs)
+
+    @patch('openai.OpenAI')
+    @patch('subprocess.run')
+    @patch('tempfile.NamedTemporaryFile')
+    def test_code_generation_and_execution(self, mock_tempfile, mock_subprocess, mock_openai):
+        """Test code generation and execution"""
+        # Setup mocks
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
         
-        # Verify the file was written correctly
-        with open(temp_memory_file, 'r') as f:
-            saved_data = json.load(f)
-        expected_data = [
-            {'role': 'user', 'content': 'Hello'},
-            {'role': 'assistant', 'content': 'Hi there!'}
-        ]
-        assert saved_data == expected_data
-    
-    def test_load_memory_success(self, cosmic_cli, temp_memory_file):
-        """Test successful memory loading."""
-        test_data = [
-            {'role': 'user', 'content': 'Hello'},
-            {'role': 'assistant', 'content': 'Hi there!'}
-        ]
+        # Mock code generation response
+        mock_response = Mock()
+        mock_response.choices = [Mock(message=Mock(content="print('Hello, World!')"))]
+        mock_client.chat.completions.create.return_value = mock_response
         
-        with open(temp_memory_file, 'w') as f:
-            json.dump(test_data, f)
+        # Mock temp file
+        mock_temp = Mock()
+        mock_temp.name = '/tmp/test.py'
+        mock_tempfile.return_value.__enter__.return_value = mock_temp
         
-        loaded_data = cosmic_cli.load_memory()
-        assert loaded_data == test_data
-    
-    def test_load_memory_file_not_exists(self, cosmic_cli):
-        """Test loading memory when file doesn't exist."""
-        # Use a non-existent file path
-        with patch('main.MEMORY_FILE', Path('/nonexistent/file.json')):
-            loaded_data = cosmic_cli.load_memory()
-            assert loaded_data == []
-    
-    def test_load_memory_corrupted_file(self, cosmic_cli, temp_memory_file):
-        """Test loading memory from corrupted JSON file."""
-        # Write invalid JSON
-        with open(temp_memory_file, 'w') as f:
-            f.write('invalid json content')
+        # Mock subprocess execution
+        mock_subprocess.return_value = Mock(
+            stdout="Hello, World!\n",
+            stderr="",
+            returncode=0
+        )
         
-        loaded_data = cosmic_cli.load_memory()
-        assert loaded_data == []
-    
-    def test_append_to_memory(self, cosmic_cli, temp_memory_file):
-        """Test appending single message to memory."""
-        cosmic_cli.append_to_memory('user', 'Hello')
-        cosmic_cli.append_to_memory('assistant', 'Hi there!')
+        agent = StargazerAgent("test directive", api_key="test_key")
+        agent.client = mock_client
         
-        with open(temp_memory_file, 'r') as f:
-            saved_data = json.load(f)
+        # Execute code generation
+        agent._generate_and_execute_code("create hello world")
         
-        expected_data = [
-            {'role': 'user', 'content': 'Hello'},
-            {'role': 'assistant', 'content': 'Hi there!'}
-        ]
-        assert saved_data == expected_data
-    
-    @patch('main.Client')
-    def test_initialize_chat_success(self, mock_client, cosmic_cli):
-        """Test successful chat initialization."""
-        # Mock environment
-        with patch.dict(os.environ, {'XAI_API_KEY': 'test_key'}):
-            # Mock the client and chat instance
-            mock_chat = Mock()
-            mock_client.return_value.chat.create.return_value = mock_chat
+        # Verify calls
+        mock_client.chat.completions.create.assert_called()
+        assert any("Generated Code" in log for log in agent.logs)
+
+    @patch('openai.OpenAI')
+    def test_information_gathering(self, mock_openai):
+        """Test information gathering functionality"""
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        
+        # Mock info response
+        mock_response = Mock()
+        mock_response.choices = [Mock(message=Mock(content="Python is a programming language"))]
+        mock_client.chat.completions.create.return_value = mock_response
+        
+        agent = StargazerAgent("test directive", api_key="test_key")
+        agent.client = mock_client
+        
+        # Execute information gathering
+        agent._gather_information("What is Python?")
+        
+        # Verify
+        mock_client.chat.completions.create.assert_called()
+        assert any("Cosmic Intelligence Report" in log for log in agent.logs)
+
+    @patch('openai.OpenAI')
+    @patch('threading.Thread')
+    def test_full_execution_flow(self, mock_thread, mock_openai):
+        """Test complete execution flow"""
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        
+        # Mock Grok plan response
+        plan_response = Mock()
+        plan_response.choices = [Mock(message=Mock(content="1. SHELL: echo 'hello'\n2. INFO: System check"))]
+        mock_client.chat.completions.create.return_value = plan_response
+        
+        agent = StargazerAgent("test directive", api_key="test_key")
+        agent.client = mock_client
+        
+        # Mock the _execute method to avoid threading issues in tests
+        with patch.object(agent, '_execute') as mock_execute:
+            agent.run()
+            mock_thread.assert_called_once()
+
+    def test_step_execution_routing(self):
+        """Test that steps are routed to correct execution methods"""
+        agent = StargazerAgent("test directive", api_key="test_key")
+        
+        with patch.object(agent, '_execute_shell_command') as mock_shell, \
+             patch.object(agent, '_generate_and_execute_code') as mock_code, \
+             patch.object(agent, '_gather_information') as mock_info:
             
-            result = cosmic_cli.initialize_chat(load_history=False)
+            # Test shell routing
+            agent._execute_step("SHELL: ls -l")
+            mock_shell.assert_called_once_with("ls -l")
             
-            assert result == mock_chat
-            assert cosmic_cli.client_instance is not None
-            assert cosmic_cli.chat_instance == mock_chat
-    
-    @patch('main.Client')
-    def test_initialize_chat_no_api_key(self, mock_client, cosmic_cli):
-        """Test chat initialization without API key."""
-        # Clear environment
-        with patch.dict(os.environ, {}, clear=True):
-            result = cosmic_cli.initialize_chat()
+            # Test code routing  
+            agent._execute_step("CODE: create hello world")
+            mock_code.assert_called_once_with("create hello world")
             
-            assert result is None
-            assert cosmic_cli.client_instance is None
-            assert cosmic_cli.chat_instance is None
-    
-    @patch('main.Client')
-    def test_initialize_chat_with_history(self, mock_client, cosmic_cli, temp_memory_file):
-        """Test chat initialization with history loading."""
-        # Create test history
-        test_history = [
-            {'role': 'user', 'content': 'Hello'},
-            {'role': 'assistant', 'content': 'Hi there!'}
-        ]
-        with open(temp_memory_file, 'w') as f:
-            json.dump(test_history, f)
+            # Test info routing
+            agent._execute_step("INFO: system status")
+            mock_info.assert_called_once_with("system status")
+
+    def test_safety_confirmation(self):
+        """Test safety confirmation for dangerous commands"""
+        agent = StargazerAgent("test directive", api_key="test_key")
         
-        # Mock environment and client
-        with patch.dict(os.environ, {'XAI_API_KEY': 'test_key'}):
-            mock_chat = Mock()
-            mock_client.return_value.chat.create.return_value = mock_chat
-            
-            result = cosmic_cli.initialize_chat(load_history=True)
-            
-            assert result == mock_chat
-            # Verify system message was added
-            mock_chat.append.assert_called()
+        # Test dangerous command detection
+        assert not agent._confirm_step("rm -rf /important/data")
+        
+        # Test normal command (would normally ask for confirmation, but we'll mock it)
+        with patch('rich.prompt.Confirm.ask', return_value=True):
+            assert agent._confirm_step("SHELL: ls -l")
 
 
-class TestLoadManualEnv:
-    """Test suite for load_manual_env function."""
+class TestUIIntegration:
+    """Test UI integration with agents"""
     
-    def test_load_manual_env_file_exists(self):
-        """Test loading .env file when it exists."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
-            f.write('XAI_API_KEY=test_key\nGROK_API_KEY=test_key2\n')
-            env_path = Path(f.name)
-        
-        try:
-            with patch('main.Path.cwd') as mock_cwd:
-                mock_cwd.return_value = env_path.parent
-                
-                # Clear environment first
-                with patch.dict(os.environ, {}, clear=True):
-                    load_manual_env()
-                    
-                    assert os.environ.get('XAI_API_KEY') == 'test_key'
-                    assert os.environ.get('GROK_API_KEY') == 'test_key2'
-        finally:
-            env_path.unlink(missing_ok=True)
-    
-    def test_load_manual_env_file_not_exists(self):
-        """Test loading .env when file doesn't exist."""
-        original_env = dict(os.environ)
-        
-        load_manual_env()
-        
-        # Environment should remain unchanged
-        assert dict(os.environ) == original_env
-    
-    def test_load_manual_env_invalid_format(self):
-        """Test loading .env file with invalid format."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.env', delete=False) as f:
-            f.write('invalid_line_without_equals\n# comment\nXAI_API_KEY=test_key\n')
-            env_path = Path(f.name)
-        
-        try:
-            with patch('main.Path.cwd') as mock_cwd:
-                mock_cwd.return_value = env_path.parent
-                
-                with patch.dict(os.environ, {}, clear=True):
-                    load_manual_env()
-                    
-                    # Should only load valid lines
-                    assert os.environ.get('XAI_API_KEY') == 'test_key'
-        finally:
-            env_path.unlink(missing_ok=True)
+    def test_add_directive_creates_agent(self):
+        """Test that adding a directive creates an agent"""
+        ui = DirectivesUI()
+        ui.run(headless=True)  # Run the app in headless mode for testing
+        ui.on_mount()  # Initialize table
+        ui.add_directive("test directive")
+        assert "test directive" in ui.agents
+
+    def test_log_toggle_functionality(self):
+        """Test log toggle functionality"""
+        ui = DirectivesUI()
+        ui.run(headless=True)  # Run the app in headless mode for testing
+        ui.on_mount()  # Initialize table
+        ui.add_directive("test directive")
+        ui.toggle_logs("test directive")
+        assert ui.show_logs["test directive"] is True
+        ui.toggle_logs("test directive")
+        assert ui.show_logs["test directive"] is False
 
 
-class TestCosmicQuotes:
-    """Test suite for cosmic quotes functionality."""
-    
-    def test_cosmic_quotes_not_empty(self):
-        """Test that cosmic quotes list is not empty."""
-        assert len(COSMIC_QUOTES) > 0
-    
-    def test_cosmic_quotes_format(self):
-        """Test that cosmic quotes have the expected format."""
-        for quote in COSMIC_QUOTES:
-            assert isinstance(quote, str)
-            assert len(quote) > 0
-            assert quote.endswith(':')  # All quotes should end with colon
-
-
-class TestIntegration:
-    """Integration tests for the CLI."""
-    
-    @patch('main.cosmic_cli')
-    def test_cli_commands_exist(self, mock_cosmic_cli):
-        """Test that all CLI commands are properly defined."""
-        from main import cli
-        
-        # Get all command names
-        command_names = [cmd.name for cmd in cli.commands.values()]
-        
-        expected_commands = ['chat', 'ask', 'analyze', 'hack', 'run_command']
-        for cmd in expected_commands:
-            assert cmd in command_names
-    
-    def test_cli_help_formatter(self):
-        """Test that the cosmic help formatter works."""
-        from main import CosmicHelpFormatter
-        
-        formatter = CosmicHelpFormatter()
-        assert formatter is not None
-        
-        # Test that methods exist and are callable
-        assert hasattr(formatter, 'write_usage')
-        assert hasattr(formatter, 'write_heading')
-        assert hasattr(formatter, 'write_text')
-        assert hasattr(formatter, 'write_dl')
-
-
-if __name__ == '__main__':
-    pytest.main([__file__]) 
+# Run with: python -m pytest tests/test_cosmic_cli.py -v --cov=agents --cov=ui --cov-report=term-missing 

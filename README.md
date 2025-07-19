@@ -1,215 +1,111 @@
-# 🌟 The Ultimate Cosmic CLI: Grok's Terminal Portal
+# 🌟 Cosmic CLI: The Self-Correcting, Context-Aware Agent for Your Terminal
 
-> **Smarter, Funnier, and More Powerful than Gemini/Claude**
+> **An intelligent, agentic CLI powered by Grok that understands your codebase, reasons about your directives, and executes multi-step plans.**
 
-A powerful and interactive command-line interface (CLI) designed to interact with xAI's Grok API. It provides a seamless and engaging conversational experience, along with advanced features for file analysis and AI-powered terminal hacks.
+Cosmic CLI transcends traditional command-line tools. It's a true AI agent that lives in your terminal. Powered by xAI's Grok-4, it features a sophisticated, step-by-step execution loop, allowing it to reason, self-correct, and tackle complex tasks with a deep understanding of your project's context.
 
-## ✨ Features
+## ✨ Core Features
 
-- **🚀 Interactive Chat:** Engage in multi-turn conversations with Grok
-- **🌌 Cosmic Flair:** Enjoy a visually appealing interface with ASCII art and cosmic-themed responses
-- **📁 File Analysis:** Have Grok analyze the content of your text files
-- **⚡ AI-Powered Terminal Hacks:** Get intelligent suggestions for productivity, fun, and learning
-- **💾 Memory Persistence:** Conversations are saved between sessions
-- **🔒 Safety Features:** Command execution with confirmation prompts
-- **📦 Pip-Installable:** Easily install and use like any other Python package
-- **🧪 Comprehensive Testing:** 100% test coverage with pytest
+- **🚀 Agentic Execution Engine (`StargazerAgent`):**
+  - **Step-by-Step Reasoning:** Doesn't just follow a script. It consults Grok for the single best next action at every step.
+  - **Contextual Memory:** Remembers the results of its actions (files read, commands run) to make smarter subsequent decisions.
+  - **Self-Correction:** If a step fails, the error becomes part of the context, allowing the agent to dynamically find a new solution.
+  - **Multi-Modal Commands:** Seamlessly executes shell commands (`SHELL:`), runs Python code (`CODE:`), reads files (`READ:`), and gathers information (`INFO:`).
+
+- **🌌 Rich, Interactive TUI:**
+  - Built with **Textual**, providing a modern, app-like experience in the terminal.
+  - A dynamic **"COSMIC CLI"** banner that sets a cosmic tone.
+  - An interactive **Directives Table** to view agent tasks.
+  - A collapsible **Live Logs Panel** to monitor the agent's thoughts and actions in real-time.
+
+- **🧠 Deep Context Awareness (`ContextManager`):**
+  - **Automatic Project Scanning:** Instantly understands your project's file structure.
+  - **Intelligent File Reading:** Can be directed to read specific files to inform its actions.
+  - **Full Context Prompts:** Provides Grok with the file tree and relevant file contents, ensuring highly relevant and accurate responses.
+
+- **💾 Memory Persistence & Safety:**
+  - Standard chat history is saved between sessions.
+  - Agent execution includes safety modes (`safe`, `interactive`) to prevent accidental execution of dangerous commands.
 
 ## 🚀 Installation
 
-### From Source
 ```bash
 # Clone the repository
 git clone <your-repo-url>
 cd cosmic-cli
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate
 
-# Install in development mode
+# Install in editable mode
 pip install -e .
-```
-
-### From PyPI (when published)
-```bash
-pip install cosmic-cli
 ```
 
 ## ⚙️ Configuration
 
-1. **Get your xAI API key** from [xAI's platform](https://x.ai)
-2. **Create a `.env` file** in your project directory:
-   ```bash
-   XAI_API_KEY=your_api_key_here
-   ```
+1.  Obtain your API key from the [xAI Console](https://console.x.ai).
+2.  Create a `.env` file in the project root:
+    ```
+    XAI_API_KEY=your_xai_api_key_here
+    ```
 
 ## 🎯 Usage
 
-### Basic Commands
+The primary entry point for agentic tasks is the `stargazer deploy` command.
+
+### Example 1: Codebase Question Answering
 ```bash
-# Show help
-cosmic-cli --help
-
-# Start interactive chat
-cosmic-cli chat
-
-# Ask a single question
-cosmic-cli ask "What is the meaning of life?"
-
-# Analyze a file
-cosmic-cli analyze /path/to/your/file.txt
-
-# Get AI-powered terminal hacks
-cosmic-cli hack productivity
-cosmic-cli hack fun
-cosmic-cli hack learn
-
-# Run a suggested command (with confirmation)
-cosmic-cli run_command "echo 'Hello, World!'"
+cosmic-cli stargazer deploy 'Read the main.py file and summarize what the "stargazer" command group does.'
 ```
+> The agent will first `READ: cosmic_cli/main.py`, then use that context to `FINISH:` with an accurate summary.
 
-### Interactive Chat Mode
+### Example 2: Simple Refactoring
 ```bash
-cosmic-cli chat
+cosmic-cli stargazer deploy 'In cosmic_cli/main.py, find the COsmic_QUOTES list and add a new quote: "Hello from the cosmos!"'
 ```
-- Type your messages and press Enter
-- Type `quit` or `exit` to end the conversation
-- Type `reset` to clear conversation history
-- All conversations are automatically saved
+> The agent will read the file, generate Python code to modify it, and execute that code.
 
-### File Analysis
+### Example 3: Complex, Multi-Step Tasks
 ```bash
-cosmic-cli analyze README.md
+cosmic-cli stargazer deploy 'Create a new file called "hello.txt" with the content "Hello, World!", then verify its content using the "cat" command.'
 ```
-Grok will analyze the file content and provide insights, suggestions, or improvements.
+> The agent will chain a `CODE:` or `SHELL:` command to create the file, followed by a `SHELL:` command to verify it.
 
-### Terminal Hacks
-```bash
-# Get productivity tips
-cosmic-cli hack productivity
+## 🏗️ Development & Architecture
 
-# Get fun commands
-cosmic-cli hack fun
+The `cosmic-cli` is built on a modular, agentic architecture.
 
-# Get learning commands
-cosmic-cli hack learn
-```
+-   `cosmic_cli/main.py`: The **CLI entry point** using `click`. It handles command parsing and launches the agent or UI.
+-   `cosmic_cli/ui.py`: The **Textual TUI application**. It provides the user interface but is decoupled from the agent's core logic.
+-   `cosmic_cli/agents.py`: The **heart of the CLI**. Contains the `StargazerAgent` with its intelligent, step-by-step execution loop and context memory.
+-   `cosmic_cli/context.py`: The **context engine**. The `ContextManager` is responsible for scanning the file system and providing context to the agent.
 
 ## 🧪 Testing
 
-### Run Tests
 ```bash
-# Run all tests
+# Ensure you have the dev dependencies installed
+pip install pytest pytest-cov
+
+# Run the full test suite
 pytest
-
-# Run with coverage report
-pytest --cov=main --cov-report=html
-
-# Run specific test file
-pytest tests/test_cosmic_cli.py
-
-# Run with verbose output
-pytest -v
 ```
-
-### Test Coverage
-The project includes comprehensive test coverage:
-- ✅ Unit tests for all core functions
-- ✅ Integration tests for CLI commands
-- ✅ Mock testing for external dependencies
-- ✅ Error handling tests
-- ✅ Memory persistence tests
-
-## 🏗️ Development
-
-### Project Structure
-```
-cosmic-cli/
-├── main.py              # Core CLI application
-├── setup.py             # Package configuration
-├── requirements.txt     # Dependencies
-├── pytest.ini          # Test configuration
-├── tests/              # Test suite
-│   ├── __init__.py
-│   └── test_cosmic_cli.py
-├── README.md           # Documentation
-└── .gitignore          # Git ignore rules
-```
-
-### Key Components
-
-#### `GrokCLI` Class
-- **State Management:** Manages chat instances and client connections
-- **Memory System:** Handles conversation persistence
-- **Error Handling:** Comprehensive error handling throughout
-- **Type Safety:** Full type hints for better code quality
-
-#### Environment Management
-- **Flexible .env Loading:** Supports multiple .env file locations
-- **API Key Detection:** Supports both `XAI_API_KEY` and `GROK_API_KEY`
-- **Graceful Fallbacks:** Handles missing configuration gracefully
-
-#### CLI Commands
-- **`chat`:** Interactive conversation mode
-- **`ask`:** Single question mode
-- **`analyze`:** File analysis mode
-- **`hack`:** AI-powered terminal suggestions
-- **`run_command`:** Safe command execution
-
-## 🔧 Technical Details
-
-### Dependencies
-- **`click`:** CLI framework
-- **`xai-sdk`:** xAI API client
-- **`rich`:** Beautiful terminal output
-- **`pyfiglet`:** ASCII art generation
-- **`pytest`:** Testing framework
-
-### Memory System
-- **JSON-based Storage:** Conversations saved to `~/.cosmic_cli_memory.json`
-- **Automatic Persistence:** Messages saved after each interaction
-- **Corruption Handling:** Graceful handling of corrupted memory files
-- **Reset Functionality:** Easy conversation history clearing
-
-### Safety Features
-- **Command Confirmation:** All executed commands require user confirmation
-- **Error Handling:** Comprehensive error handling with user-friendly messages
-- **File Validation:** Binary file detection for analysis
-- **API Error Recovery:** Graceful handling of API failures
-
-## 🌟 What Makes This Special
-
-1. **Cosmic Theme:** Space-themed responses and beautiful ASCII art
-2. **Production Ready:** Comprehensive testing and error handling
-3. **Type Safe:** Full type hints for better development experience
-4. **Memory Persistence:** Conversations saved between sessions
-5. **Safety First:** Command execution with confirmation prompts
-6. **Flexible Configuration:** Multiple .env file location support
-7. **Beautiful UI:** Rich console output with colors and formatting
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Make your changes and add tests
-4. Run tests: `pytest`
-5. Commit your changes: `git commit -am 'Add feature'`
-6. Push to the branch: `git push origin feature-name`
-7. Submit a pull request
+Contributions that enhance the agent's intelligence, expand its capabilities, or polish the UI are welcome.
+
+1.  Fork the repository.
+2.  Create your feature branch (`git checkout -b feature/AmazingFeature`).
+3.  Commit your changes (`git commit -m 'Add some AmazingFeature'`).
+4.  Push to the branch (`git push origin feature/AmazingFeature`).
+5.  Open a Pull Request.
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- **xAI** for providing the Grok API
-- **Click** for the excellent CLI framework
-- **Rich** for the beautiful terminal output library
-- **PyFiglet** for the ASCII art capabilities
+Distributed under the MIT License.
 
 ---
 
-**Built with ❤️ and cosmic energy for the Linux community!** 🌌✨
+**Built with ❤️ and cosmic energy.** 🌌✨
 

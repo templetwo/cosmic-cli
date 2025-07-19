@@ -1,9 +1,8 @@
-click
-python-dotenv
-xai-sdk
-rich
-pyfiglet
 pytest
 pytest-cov
+openai==1.35.10
+textual
+pyfiglet
+# Add any other dependencies below as needed
 
 

@@ -11,6 +11,8 @@ import subprocess
 import json
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from cosmic_cli.ui import DirectivesUI
+from cosmic_cli.agents import StargazerAgent
 
 # --- Manual .env loading ---
 def load_manual_env() -> None:
@@ -312,5 +314,36 @@ def run_command(command_to_run: str):
     else:
         console.print("[bold yellow]Command execution cancelled.[/bold yellow]")
 
-if __name__ == '__main__':
-    cli()
+@click.group()
+def stargazer():
+    """Cosmic Stargazer agents for directive execution."""
+    pass
+
+@stargazer.command()
+@click.argument('directive')
+def deploy(directive):
+    def on_update(msg):
+        console.print(f"[cyan]{msg}[/cyan]")
+
+    api_key = os.getenv("XAI_API_KEY")
+    if not api_key:
+        console.print("[red]XAI_API_KEY not set.[/red]")
+        return
+
+    agent = StargazerAgent(
+        directive,
+        api_key,
+        on_update,
+        work_dir=os.getcwd()
+    )
+    result = agent.execute()
+    console.print(f"[green]Stargazer deployed for '{directive}'—engaging warp drive![/green]")
+
+# Add to main CLI
+cli.add_command(stargazer)
+
+def main():
+    DirectivesUI().run()
+
+if __name__ == "__main__":
+    main()

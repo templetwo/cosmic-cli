@@ -1,7 +1,10 @@
 README.md
 setup.py
 cosmic_cli/__init__.py
+cosmic_cli/agents.py
+cosmic_cli/context.py
 cosmic_cli/main.py
+cosmic_cli/ui.py
 cosmic_cli.egg-info/PKG-INFO
 cosmic_cli.egg-info/SOURCES.txt
 cosmic_cli.egg-info/dependency_links.txt
