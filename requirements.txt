@@ -1,0 +1,9 @@
+click
+python-dotenv
+xai-sdk
+rich
+pyfiglet
+pytest
+pytest-cov
+
+

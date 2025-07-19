@@ -1,0 +1,12 @@
+README.md
+setup.py
+cosmic_cli/__init__.py
+cosmic_cli/main.py
+cosmic_cli.egg-info/PKG-INFO
+cosmic_cli.egg-info/SOURCES.txt
+cosmic_cli.egg-info/dependency_links.txt
+cosmic_cli.egg-info/entry_points.txt
+cosmic_cli.egg-info/requires.txt
+cosmic_cli.egg-info/top_level.txt
+tests/__init__.py
+tests/test_cosmic_cli.py

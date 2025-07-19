@@ -1,0 +1,5 @@
+click
+pyfiglet
+python-dotenv
+rich
+xai-sdk
