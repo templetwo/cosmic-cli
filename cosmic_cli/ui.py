@@ -1,5 +1,5 @@
 from textual.app import App, ComposeResult
-from textual.widgets import DataTable, Static, Input
+from textual.widgets import DataTable, Static, Input, TextArea
 from textual.containers import Vertical
 from textual.reactive import reactive
 from pyfiglet import Figlet
@@ -24,20 +24,26 @@ class DirectivesUI(App):
     def compose(self) -> ComposeResult:
         yield Static(self.figlet.renderText('COSMIC CLI'), classes="banner")
         yield DataTable(id="directives")
-        yield Input(placeholder="Enter directive here...", id="directive_input")
+        yield TextArea(id="directive_input", placeholder="Enter or paste directive here... (supports multi-line)")
         yield Vertical(id="logs_container")
-
-    def on_input_submitted(self, event):
-        directive = event.input.value
-        self.add_directive(directive)
-        event.input.value = ""  # Clear input after submission
 
     def on_mount(self):
         table = self.query_one("#directives", DataTable)
         table.add_columns("Directive", "Status", "Logs")
         table.cursor_type = "row"
-        input_widget = self.query_one("#directive_input", Input)
-        input_widget.on_submit = self.on_input_submitted
+        input_widget = self.query_one("#directive_input", TextArea)
+        # Add submit binding
+        self.bind("enter", self.on_submit, selector="#directive_input")
+
+    def on_submit(self):
+        input_widget = self.query_one("#directive_input", TextArea)
+        directive = input_widget.text.strip()
+        if directive:
+            # Auto-format if it looks like a workflow
+            if ' ' in directive and not directive.startswith('/'):
+                directive = f"workflow {directive}"
+            self.add_directive(directive)
+            input_widget.clear()
 
     def add_directive(self, directive):
         if directive in self.agents:

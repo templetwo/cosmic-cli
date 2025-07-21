@@ -1,0 +1,6 @@
+#!/bin/bash
+# Quick Cosmic CLI Access
+# Usage: ./cosmic or cosmic (if added to PATH)
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+exec "$SCRIPT_DIR/cosmic_launcher.sh" "$@"

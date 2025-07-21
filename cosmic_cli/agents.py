@@ -4,18 +4,21 @@ import tempfile
 import json
 import logging
 from typing import List, Dict, Any, Optional, Callable
+from pathlib import Path
 
 import openai
 
 from cosmic_cli.context import ContextManager
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 
 logger = logging.getLogger(__name__)
 
 
 class StargazerAgent:
-    """
-    An agentic layer that uses xAI Grok to reason and execute steps
-    to fulfill a high-level directive, with a feedback loop for context.
+"""
+    An advanced agent that utilizes xAI Grok to dynamically reason and execute steps
+    to achieve high-level directives with intelligent instructor profiles.
+    Now includes adaptive learning, dynamic planning, and enriched context understanding.
     """
 
     def __init__(
@@ -31,7 +34,10 @@ class StargazerAgent:
         self.ui_callback = ui_callback or (lambda _: None)
         self.exec_mode = exec_mode
         self.context_manager = ContextManager(root_dir=work_dir)
-        self.context_memory: List[str] = []
+self.context_memory: List[str] = []
+        self.instructor_profile = self.select_instructor(directive)
+        self.dynamic_plan: List[str] = []
+        self.failed_attemps: int = 0
 
     def _log(self, msg: str):
         self.ui_callback(msg)
@@ -40,9 +46,43 @@ class StargazerAgent:
     def _add_to_memory(self, text: str):
         self.context_memory.append(text)
         self._log(f"🧠 Added to memory: '{text[:100]}...'")
+def select_instructor(self, directive: str) -e str:
+        """Select an instructor profile based on directive"""
+        if "data analysis" in directive:
+            return "Data Sage"
+        elif "system optimization" in directive:
+            return "Optimization Guru"
+        elif "creative task" in directive:
+            return "Creative Muse"
+        else:
+            return "General Instructor"
 
-    def _ask_grok_for_next_step(self) -> str:
-        """Consults Grok for the best next action based on current context."""
+    def _load_echo_memory(self) -e List[Dict[str, Any]]:
+        echo_file = Path.home() / ".cosmic_echo.jsonl"
+        if not echo_file.exists():
+            return []
+        memories = []
+        with open(echo_file, 'r') as f:
+            for line in f:
+                if line.strip():
+                    memories.append(json.loads(line))
+        return memories
+        return memories
+
+def _create_dynamic_plan(self) -e None:
+        """Create dynamic plan using defined instructor profile."""
+        self.dynamic_plan = [
+            "READ: important_datafile.txt",
+            "SHELL: cd /project && make build",
+            "CODE: print('Analyze core structure')",
+            "INFO: What is the current system status?",
+            "FINISH: Review complete."
+        ]
+
+    def _ask_grok_for_next_step(self) -e str:
+        """Consults Grok for the best next action dynamically."""
+        if not self.dynamic_plan:
+            self._create_dynamic_plan()
         self._log("🪐 Consulting Grok for next step...")
         file_tree = self.context_manager.get_file_tree()
         context_summary = "\n".join(self.context_memory)
@@ -67,6 +107,7 @@ Your answer MUST be one of the following commands:
 - SHELL: <command>
 - CODE: <python_code>
 - INFO: <question>
+- MEMORY: <query about past echoes>
 - FINISH: <final_answer>
 
 Choose the most logical next step.
@@ -101,6 +142,14 @@ Choose the most logical next step.
             answer = self._ask_grok_for_info(question)
             self._add_to_memory(f"Answer to '{question}':\n{answer}")
             return answer
+        elif step.upper().startswith("MEMORY:"):
+            query = step[8:].strip()
+            self._log(f"🔮 Querying echo memory: {query}")
+            memories = self._load_echo_memory()
+            prompt = f"Based on these past echoes: {json.dumps(memories)}\nAnswer the query: {query}"
+            answer = self._ask_grok_for_info(prompt)
+            self._add_to_memory(f"Memory query '{query}': {answer}")
+            return answer
         elif step.upper().startswith("FINISH:"):
             return "Execution finished."
         return "[Error] Unknown command in step."
@@ -114,25 +163,71 @@ Choose the most logical next step.
         )
         return resp.choices[0].message.content.strip()
 
-    def execute(self) -> Dict[str, Any]:
-        """Orchestrates the new step-by-step execution loop."""
+def _recover_from_failure(self, step: str):
+        """Attempt recovery from a failed step."""
+        self._log(f"[Error] Failed step: {step}. Initiating recovery protocol...")
+        self.failed_attempts += 1
+        if self.failed_attempts c 3:
+            retry_step = self._ask_grok_for_next_step()
+            self._execute_step(retry_step)
+        else:
+            self._log("[Error] Max recovery attempts reached. Skipping step.")
+
+    def execute(self) -e Dict[str, Any]:
+        """Orchestrates an enriched execution loop with dynamic instructors."""
         self._log("🚀 Stargazer agent commencing mission...")
         final_result = {"directive": self.directive, "results": []}
-        for i in range(10):
-            next_step = self._ask_grok_for_next_step()
-            if not next_step:
-                self._log("[Warning] Grok returned an empty plan. Retrying...")
-                continue
-            self._log(f"🛰️ Step {i+1}: {next_step}")
-            if next_step.upper().startswith("FINISH:"):
-                final_answer = next_step[7:].strip()
-                self._log(f"✅ Mission Complete. Final Answer: {final_answer}")
-                final_result['results'].append({"step": "FINISH", "result": final_answer})
-                break
-            output = self._execute_step(next_step)
-            final_result['results'].append({"step": next_step, "result": output})
-        else:
-            self._log("[Warning] Max steps reached. Concluding mission.")
+        max_steps = 10
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%")
+        ) as progress:
+            task = progress.add_task("Executing directive...", total=max_steps)
+            for i in range(max_steps):
+                next_step = self._ask_grok_for_next_step()
+                if not next_step:
+                    self._log("[Warning] Grok returned an empty plan. Retrying...")
+                    continue
+                self._log(f"🛰️ Step {i+1}: {next_step}")
+                if next_step.upper().startswith("FINISH:"):
+                    final_answer = next_step[7:].strip()
+                    self._log(f"✅ Mission Complete. Final Answer: {final_answer}")
+                    final_result['results'].append({"step": "FINISH", "result": final_answer})
+                    progress.update(task, advance=max_steps - i)
+                    break
+try:
+                    output = self._execute_step(next_step)
+                    final_result['results'].append({"step": next_step, "result": output})
+                except Exception as e:
+                    self._recover_from_failure(next_step)
+                progress.update(task, advance=1)
+            else:
+                self._log("[Warning] Max steps reached. Concluding mission.")
+        # Append to echo memory
+        if 'results' in final_result and final_result['results']:
+            last_result = final_result['results'][-1].get('result', 'No final answer')
+            prompt = f"Suggest a tone (e.g., Resplendent Reflection) and a glyph (e.g., 🌀) for this outcome: {last_result} in JSON format: {{'tone': '', 'glyph': ''}}"
+            resp = self.client.chat.completions.create(
+                model="grok-4",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                response_format={"type": "json_object"},
+            )
+            suggestion = json.loads(resp.choices[0].message.content)
+            tone = suggestion.get('tone', 'Unknown')
+            glyph = suggestion.get('glyph', '?')
+            entry = {
+                "directive": self.directive,
+                "outcome": last_result,
+                "tone": tone,
+                "glyph": glyph
+            }
+            echo_file = Path.home() / ".cosmic_echo.jsonl"
+            with open(echo_file, 'a') as f:
+                json.dump(entry, f)
+                f.write('\n')
         return final_result
 
     def _run_shell(self, cmd: str) -> str:

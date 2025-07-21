@@ -13,6 +13,9 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from cosmic_cli.ui import DirectivesUI
 from cosmic_cli.agents import StargazerAgent
+import time
+from rich.progress import Progress
+from click.core import Command, Group
 
 # --- Manual .env loading ---
 def load_manual_env() -> None:
@@ -68,10 +71,8 @@ class CosmicCLI:
             serializable_messages = []
             for msg in messages:
                 if hasattr(msg, 'role') and hasattr(msg, 'content'):
-                    serializable_messages.append({'role': msg.role, 'content': msg.content})
-                else:
-                    # Fallback for any non-xai_sdk message objects if they somehow get in
-                    serializable_messages.append(msg)
+                    content = msg.content if isinstance(msg.content, str) else "<recursive agent memory>"
+                    serializable_messages.append({'role': msg.role, 'content': content})
 
             with open(MEMORY_FILE, 'w') as f:
                 json.dump(serializable_messages, f, indent=4)
@@ -102,8 +103,12 @@ class CosmicCLI:
         """Initialize the xAI chat instance."""
         api_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
         if not api_key:
-            self.console.print("[bold red]Error: API key not found. Make sure XAI_API_KEY is set in your .env file.[/bold red]")
-            return None
+            api_key = click.prompt("[bold yellow]Enter your xAI API key[/bold yellow]", type=str, hide_input=True)
+            if api_key:
+                os.environ["XAI_API_KEY"] = api_key
+            else:
+                self.console.print("[bold red]Error: API key is required.[/bold red]")
+                return None
         
         self.client_instance = Client(api_key=api_key)
         self.chat_instance = self.client_instance.chat.create(model="grok-4")
@@ -147,18 +152,39 @@ class CosmicHelpFormatter(click.HelpFormatter):
         for term, definition in rows:
             console.print(f"  [bold cyan]{term.ljust(col_max)}[/bold cyan] {definition}")
 
-@click.group(context_settings=dict(help_option_names=['-h', '--help']))
-def cli():
+class CosmicCommand(Command):
+    def get_help(self, ctx):
+        formatter = CosmicHelpFormatter(width=ctx.terminal_width)
+        self.format_help(ctx, formatter)
+        return formatter.getvalue().rstrip('\n')
+
+class CosmicGroup(Group):
+    command_class = CosmicCommand
+    group_class = type  # Allow subgroups to inherit
+
+@click.group(cls=CosmicGroup, context_settings=dict(help_option_names=['-h', '--help']))
+@click.option('--ask', type=str, help='Ask xAI a single question')
+@click.option('--analyze', type=click.Path(exists=True), help='Analyze a file')
+@click.option('--hack', type=str, help='Get AI-powered terminal hacks (productivity, fun, learn)')
+@click.option('--run-command', type=str, help='Run a terminal command')
+def cli(ask, analyze, hack, run_command):
     """
     Cosmic CLI: Your cosmic companion.
     """
-    pass
+    if ask:
+        ask_command(ask)
+    elif analyze:
+        analyze_command(analyze)
+    elif hack:
+        hack_command(hack)
+    elif run_command:
+        run_command_command(run_command)
+    else:
+        chat_command()
 
-@cli.command()
-def chat():
-    """
-    Start an interactive chat with xAI.
-    """
+# Rename original commands to functions
+def chat_command():
+    # Original chat command code here
     chat_instance = cosmic_cli.initialize_chat(load_history=True)
     if chat_instance is None:
         return
@@ -192,16 +218,10 @@ def chat():
             console.print(f"[bold red]An error occurred during response generation: {e}[/bold red]")
             # If an error occurs, remove the last user message to avoid sending bad context
             if chat_instance and chat_instance.messages:
-                chat_instance.messages.pop() 
+                chat_instance.messages.pop()
 
-@cli.command()
-@click.argument('prompt')
-def ask(prompt: str):
-    """
-    Ask xAI a single question.
-    """
-    # For 'ask', we don't want to load previous history into the chat_instance
-    # as it's a single question, but we do want to save the interaction.
+def ask_command(prompt: str):
+    # Original ask command code here
     chat_instance = cosmic_cli.initialize_chat(load_history=False)
     if chat_instance is None:
         return
@@ -211,20 +231,12 @@ def ask(prompt: str):
         response = chat_instance.sample()
         cosmic_prefix = random.choice(COSMIC_QUOTES)
         console.print(f"[bold blue]{cosmic_prefix}[/bold blue] [white]{response.content}[/white]")
-        # Save this single interaction to history using the new helper
         cosmic_cli.append_to_memory("user", prompt)
         cosmic_cli.append_to_memory("assistant", response.content)
     except Exception as e:
         console.print(f"[bold red]An error occurred: {e}[/bold red]")
 
-@cli.command()
-@click.argument('file_path', type=click.Path(exists=True))
-def analyze(file_path: str):
-    """
-    Analyze the content of a file using xAI.
-    """
-    # For 'analyze', we don't want to load previous history into the chat_instance
-    # as it's a single analysis, but we do want to save the interaction.
+def analyze_command(file_path: str):
     chat_instance = cosmic_cli.initialize_chat(load_history=False)
     if chat_instance is None:
         return
@@ -235,16 +247,21 @@ def analyze(file_path: str):
         
         console.print(f"[bold yellow]Analyzing file: {file_path}[/bold yellow]")
         
-        # Prepare the prompt for xAI
         analysis_prompt = f"Please analyze the following content from a file and provide insights or suggestions:\n\n```\n{content}\n```"
         
         chat_instance.append(user(analysis_prompt))
+        
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Analyzing...", total=100)
+            for _ in range(100):
+                time.sleep(0.01)  # Simulate progress
+                progress.update(task, advance=1)
+        
         response = chat_instance.sample()
         
         cosmic_prefix = random.choice(COSMIC_QUOTES)
         console.print(f"[bold blue]{cosmic_prefix}[/bold blue] [white]{response.content}[/white]")
 
-        # Save this analysis interaction to history using the new helper
         cosmic_cli.append_to_memory("user", analysis_prompt)
         cosmic_cli.append_to_memory("assistant", response.content)
 
@@ -253,15 +270,7 @@ def analyze(file_path: str):
     except Exception as e:
         console.print(f"[bold red]An error occurred during file analysis: {e}[/bold red]")
 
-@cli.command()
-@click.argument('mode')
-def hack(mode: str):
-    """
-    Get AI-powered terminal hacks from xAI.
-    Modes: productivity, fun, learn
-    """
-    # For 'hack', we don't want to load previous history into the chat_instance
-    # as it's a single request, but we do want to save the interaction.
+def hack_command(mode: str):
     chat_instance = cosmic_cli.initialize_chat(load_history=False)
     if chat_instance is None:
         return
@@ -280,22 +289,23 @@ def hack(mode: str):
     chat_instance.append(user(hack_prompt))
 
     try:
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Generating hack...", total=100)
+            for _ in range(100):
+                time.sleep(0.01)  # Simulate progress
+                progress.update(task, advance=1)
+        
         response = chat_instance.sample()
         suggested_command = response.content.strip()
         console.print(f"[bold green]xAI suggests:[/bold green] [yellow]{suggested_command}[/yellow]")
-        console.print("[bold yellow]To run this command, use: cosmic-cli run_command \"<command>\"[/bold yellow]")
-        # Save this hack interaction to history using the new helper
+        console.print("[bold yellow]To run this command, use: cosmic-cli --run-command \"{suggested_command}\"[/bold yellow]")
         cosmic_cli.append_to_memory("user", hack_prompt)
         cosmic_cli.append_to_memory("assistant", suggested_command)
     except Exception as e:
         console.print(f"[bold red]An error occurred while generating hack: {e}[/bold red]")
 
-@cli.command()
-@click.argument('command_to_run')
-def run_command(command_to_run: str):
-    """
-    Run a suggested terminal command. Use with caution!
-    """
+def run_command_command(command_to_run: str):
+    # Original run_command code here
     console.print(f"[bold red]WARNING: Executing command:[/bold red] [yellow]{command_to_run}[/yellow]")
     confirm = click.confirm("Are you sure you want to run this command?", default=False)
     if confirm:
@@ -313,6 +323,49 @@ def run_command(command_to_run: str):
             console.print(f"[bold red]An unexpected error occurred while running command: {e}[/bold red]")
     else:
         console.print("[bold yellow]Command execution cancelled.[/bold yellow]")
+
+@cli.command()
+@click.argument('tasks', nargs=-1)
+def workflow(tasks):
+    """
+    Chain tasks in a workflow using StargazerAgent.
+    """
+    if not tasks:
+        console.print("[bold red]Usage: cosmic-cli workflow <task1> <arg1> <task2> <arg2> ...[/bold red]")
+        return
+
+    # Formulate directive from tasks
+    directive_parts = []
+    for i in range(0, len(tasks), 2):
+        task = tasks[i]
+        arg = tasks[i+1] if i+1 < len(tasks) else ''
+        if task == 'analyze':
+            directive_parts.append(f"Analyze file {arg}")
+        elif task == 'hack':
+            directive_parts.append(f"Generate hack in mode {arg}")
+        else:
+            console.print(f"[bold red]Unknown task: {task}[/bold red]")
+            return
+
+    directive = " and ".join(directive_parts) + "."
+
+    # Invoke Stargazer
+    def on_update(msg):
+        console.print(f"[cyan]{msg}[/cyan]")
+
+    api_key = os.getenv("XAI_API_KEY")
+    if not api_key:
+        console.print("[red]XAI_API_KEY not set.[/red]")
+        return
+
+    agent = StargazerAgent(
+        directive,
+        api_key,
+        on_update,
+        work_dir=os.getcwd()
+    )
+    result = agent.execute()
+    console.print(f"[green]Workflow completed via Stargazer: {result}[/green]")
 
 @click.group()
 def stargazer():

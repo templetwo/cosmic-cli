@@ -1,4 +1,4 @@
-Metadata-Version: 2.4
+Metadata-Version: 2.1
 Name: cosmic-cli
 Version: 0.1.0
 Summary: The Ultimate Cosmic CLI: Grok's Terminal Portal - Smarter, Funnier, and More Powerful than Gemini/Claude
@@ -13,20 +13,6 @@ Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Developers
 Classifier: Topic :: Utilities
 Description-Content-Type: text/markdown
-Requires-Dist: click
-Requires-Dist: python-dotenv
-Requires-Dist: xai-sdk
-Requires-Dist: rich
-Requires-Dist: pyfiglet
-Dynamic: author
-Dynamic: author-email
-Dynamic: classifier
-Dynamic: description
-Dynamic: description-content-type
-Dynamic: home-page
-Dynamic: keywords
-Dynamic: requires-dist
-Dynamic: summary
 
 # 🌟 Cosmic CLI: The Self-Correcting, Context-Aware Agent for Your Terminal
 
