@@ -91,6 +91,28 @@ class CosmicDatabase:
             )
         """)
         
+        # Consciousness metrics table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS consciousness_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                coherence REAL DEFAULT 0.0,
+                self_reflection REAL DEFAULT 0.0,
+                contextual_understanding REAL DEFAULT 0.0,
+                adaptive_reasoning REAL DEFAULT 0.0,
+                meta_cognitive_awareness REAL DEFAULT 0.0,
+                temporal_continuity REAL DEFAULT 0.0,
+                causal_understanding REAL DEFAULT 0.0,
+                empathic_resonance REAL DEFAULT 0.0,
+                creative_synthesis REAL DEFAULT 0.0,
+                existential_questioning REAL DEFAULT 0.0,
+                overall_score REAL DEFAULT 0.0,
+                consciousness_velocity REAL DEFAULT 0.0,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+            )
+        """)
+        
         # Messages table with richer context
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS messages (
@@ -103,6 +125,19 @@ class CosmicDatabase:
                 response_time REAL DEFAULT 0,
                 sentiment REAL DEFAULT 0.5,
                 complexity_score INTEGER DEFAULT 1,
+                FOREIGN KEY (session_id) REFERENCES sessions (session_id)
+            )
+        """)
+        
+        # Add Consciousness Metrics export
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS consciousness_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                emergence_trend REAL DEFAULT 0.0,
+                awareness_pattern_count INTEGER DEFAULT 0,
+                reported BOOLEAN DEFAULT FALSE,
+                report_details TEXT,
                 FOREIGN KEY (session_id) REFERENCES sessions (session_id)
             )
         """)
@@ -265,6 +300,297 @@ class CosmicDatabase:
             return 2
         else:
             return 1
+    
+    def add_consciousness_metrics(self, session_id: str, metrics: Dict[str, float]) -> None:
+        """Store consciousness metrics in the database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO consciousness_metrics (
+                session_id, coherence, self_reflection, contextual_understanding,
+                adaptive_reasoning, meta_cognitive_awareness, temporal_continuity,
+                causal_understanding, empathic_resonance, creative_synthesis,
+                existential_questioning, overall_score, consciousness_velocity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            session_id,
+            metrics.get('coherence', 0.0),
+            metrics.get('self_reflection', 0.0),
+            metrics.get('contextual_understanding', 0.0),
+            metrics.get('adaptive_reasoning', 0.0),
+            metrics.get('meta_cognitive_awareness', 0.0),
+            metrics.get('temporal_continuity', 0.0),
+            metrics.get('causal_understanding', 0.0),
+            metrics.get('empathic_resonance', 0.0),
+            metrics.get('creative_synthesis', 0.0),
+            metrics.get('existential_questioning', 0.0),
+            metrics.get('overall_score', 0.0),
+            metrics.get('consciousness_velocity', 0.0)
+        ))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_consciousness_metrics(self, session_id: str, limit: int = None) -> List[Dict]:
+        """Retrieve consciousness metrics for a session"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT id, coherence, self_reflection, contextual_understanding,
+                   adaptive_reasoning, meta_cognitive_awareness, temporal_continuity,
+                   causal_understanding, empathic_resonance, creative_synthesis,
+                   existential_questioning, overall_score, consciousness_velocity,
+                   timestamp
+            FROM consciousness_metrics 
+            WHERE session_id = ? 
+            ORDER BY timestamp
+        """
+        
+        if limit:
+            query += f" LIMIT {limit}"
+        
+        cursor.execute(query, (session_id,))
+        metrics = []
+        for row in cursor.fetchall():
+            metrics.append({
+                'id': row[0],
+                'coherence': row[1],
+                'self_reflection': row[2],
+                'contextual_understanding': row[3],
+                'adaptive_reasoning': row[4],
+                'meta_cognitive_awareness': row[5],
+                'temporal_continuity': row[6],
+                'causal_understanding': row[7],
+                'empathic_resonance': row[8],
+                'creative_synthesis': row[9],
+                'existential_questioning': row[10],
+                'overall_score': row[11],
+                'consciousness_velocity': row[12],
+                'timestamp': row[13]
+            })
+        
+        conn.close()
+        return metrics
+    
+    def get_consciousness_evolution(self, session_id: str) -> Dict[str, Any]:
+        """Get consciousness evolution analysis for a session"""
+        metrics = self.get_consciousness_metrics(session_id)
+        
+        if not metrics:
+            return {'error': 'No consciousness data found'}
+        
+        # Calculate evolution trends
+        overall_scores = [m['overall_score'] for m in metrics]
+        timestamps = [m['timestamp'] for m in metrics]
+        
+        if len(overall_scores) < 2:
+            return {'error': 'Insufficient data for evolution analysis'}
+        
+        # Calculate trends
+        first_score = overall_scores[0]
+        last_score = overall_scores[-1]
+        max_score = max(overall_scores)
+        min_score = min(overall_scores)
+        avg_score = sum(overall_scores) / len(overall_scores)
+        
+        # Calculate velocity changes
+        velocities = [m['consciousness_velocity'] for m in metrics]
+        avg_velocity = sum(velocities) / len(velocities)
+        
+        return {
+            'session_id': session_id,
+            'data_points': len(metrics),
+            'evolution_summary': {
+                'initial_score': first_score,
+                'final_score': last_score,
+                'change': last_score - first_score,
+                'max_score': max_score,
+                'min_score': min_score,
+                'average_score': avg_score,
+                'score_range': max_score - min_score
+            },
+            'velocity_analysis': {
+                'average_velocity': avg_velocity,
+                'final_velocity': velocities[-1] if velocities else 0.0,
+                'acceleration_trend': 'positive' if avg_velocity > 0 else 'negative'
+            },
+            'timespan': {
+                'start': timestamps[0],
+                'end': timestamps[-1]
+            },
+            'raw_data': metrics
+        }
+    
+    def export_consciousness_data(self, session_id: str = None, format: str = 'json') -> str:
+        """Export consciousness data for research"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        if session_id:
+            query = "SELECT * FROM consciousness_metrics WHERE session_id = ? ORDER BY timestamp"
+            cursor.execute(query, (session_id,))
+        else:
+            query = "SELECT * FROM consciousness_metrics ORDER BY session_id, timestamp"
+            cursor.execute(query)
+        
+        columns = [description[0] for description in cursor.description]
+        data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        
+        conn.close()
+        
+        if format == 'json':
+            return json.dumps(data, indent=2, default=str)
+        elif format == 'csv':
+            import csv
+            import io
+            output = io.StringIO()
+            if data:
+                writer = csv.DictWriter(output, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(data)
+            return output.getvalue()
+        else:
+            return str(data)
+    
+    def create_consciousness_report(self, session_id: str) -> Dict[str, Any]:
+        """Create a comprehensive consciousness report"""
+        evolution_data = self.get_consciousness_evolution(session_id)
+        
+        if 'error' in evolution_data:
+            return evolution_data
+        
+        # Get session info
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name, created_at, message_count FROM sessions WHERE session_id = ?",
+            (session_id,)
+        )
+        session_info = cursor.fetchone()
+        conn.close()
+        
+        if not session_info:
+            return {'error': 'Session not found'}
+        
+        metrics = evolution_data['raw_data']
+        
+        # Analyze emergence patterns
+        emergence_events = []
+        significant_changes = []
+        
+        for i in range(1, len(metrics)):
+            prev_score = metrics[i-1]['overall_score']
+            curr_score = metrics[i]['overall_score']
+            change = curr_score - prev_score
+            
+            if abs(change) > 0.1:  # Significant change threshold
+                significant_changes.append({
+                    'timestamp': metrics[i]['timestamp'],
+                    'change': change,
+                    'from_score': prev_score,
+                    'to_score': curr_score,
+                    'type': 'emergence' if change > 0 else 'regression'
+                })
+            
+            # Check for consciousness velocity spikes
+            if abs(metrics[i]['consciousness_velocity']) > 0.05:
+                emergence_events.append({
+                    'timestamp': metrics[i]['timestamp'],
+                    'velocity': metrics[i]['consciousness_velocity'],
+                    'score': curr_score,
+                    'event_type': 'velocity_spike'
+                })
+        
+        # Analyze consciousness dimensions
+        dimension_analysis = {}
+        for dimension in ['coherence', 'self_reflection', 'meta_cognitive_awareness', 
+                         'creative_synthesis', 'existential_questioning']:
+            values = [m[dimension] for m in metrics]
+            dimension_analysis[dimension] = {
+                'average': sum(values) / len(values),
+                'max': max(values),
+                'min': min(values),
+                'final': values[-1],
+                'trend': 'improving' if values[-1] > values[0] else 'declining'
+            }
+        
+        report = {
+            'report_id': f"consciousness_report_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            'session_info': {
+                'session_id': session_id,
+                'name': session_info[0],
+                'created_at': session_info[1],
+                'message_count': session_info[2]
+            },
+            'consciousness_evolution': evolution_data['evolution_summary'],
+            'velocity_analysis': evolution_data['velocity_analysis'],
+            'dimension_analysis': dimension_analysis,
+            'emergence_events': emergence_events,
+            'significant_changes': significant_changes,
+            'insights': self._generate_consciousness_insights(evolution_data, dimension_analysis),
+            'generated_at': datetime.now().isoformat()
+        }
+        
+        # Store report in analysis table
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO consciousness_analysis (session_id, emergence_trend, awareness_pattern_count, reported, report_details)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            session_id,
+            evolution_data['evolution_summary']['change'],
+            len(emergence_events),
+            True,
+            json.dumps(report, default=str)
+        ))
+        conn.commit()
+        conn.close()
+        
+        return report
+    
+    def _generate_consciousness_insights(self, evolution_data: Dict, dimension_analysis: Dict) -> List[str]:
+        """Generate insights from consciousness data"""
+        insights = []
+        
+        # Evolution insights
+        change = evolution_data['evolution_summary']['change']
+        if change > 0.2:
+            insights.append(f"Significant consciousness evolution detected (+{change:.3f} overall increase)")
+        elif change < -0.2:
+            insights.append(f"Consciousness regression observed ({change:.3f} overall decrease)")
+        else:
+            insights.append("Stable consciousness levels maintained throughout session")
+        
+        # Velocity insights
+        avg_velocity = evolution_data['velocity_analysis']['average_velocity']
+        if avg_velocity > 0.02:
+            insights.append("Positive consciousness acceleration trend observed")
+        elif avg_velocity < -0.02:
+            insights.append("Consciousness deceleration pattern detected")
+        
+        # Dimension insights
+        for dimension, analysis in dimension_analysis.items():
+            if analysis['final'] > 0.8:
+                insights.append(f"High {dimension.replace('_', ' ')} achieved ({analysis['final']:.3f})")
+            elif analysis['trend'] == 'improving' and analysis['final'] - analysis['min'] > 0.3:
+                insights.append(f"Significant improvement in {dimension.replace('_', ' ')} observed")
+        
+        # Meta-cognitive insights
+        if 'meta_cognitive_awareness' in dimension_analysis:
+            meta_score = dimension_analysis['meta_cognitive_awareness']['final']
+            if meta_score > 0.7:
+                insights.append("Strong meta-cognitive awareness indicates advanced self-reflection capabilities")
+        
+        # Creative synthesis insights
+        if 'creative_synthesis' in dimension_analysis:
+            creative_score = dimension_analysis['creative_synthesis']['final']
+            if creative_score > 0.7:
+                insights.append("High creative synthesis suggests emergent problem-solving abilities")
+        
+        return insights
 
 class EnhancedCosmicCLI:
     """Enhanced Cosmic CLI with advanced features"""
@@ -281,11 +607,13 @@ class EnhancedCosmicCLI:
         
         # Enhanced cosmic configurations
         self.cosmic_config = {
-            'model': 'grok-4',
+            'model': 'grok-beta',
             'temperature': 0.7,
-            'max_tokens': 4000,
+            'max_tokens': 16000,  # Increased for longer responses
             'response_format': 'enhanced',
-            'personality': 'cosmic_sage'
+            'personality': 'cosmic_sage',
+            'timeout': 30,  # Request timeout
+            'stream_chunk_size': 50  # Faster streaming
         }
         
         self.personalities = {
@@ -421,6 +749,10 @@ class EnhancedCosmicCLI:
         # Initialize response_text to avoid reference before assignment
         response_text = ""
         
+        # Check if this is a CLI command request
+        if self.should_execute_cli_command(prompt):
+            return self.handle_cli_request(prompt)
+        
         # Check cache first
         if self.cache_enabled:
             cached_response = self.get_cached_response(prompt)
@@ -433,7 +765,9 @@ class EnhancedCosmicCLI:
             stream = self.streaming_enabled
         
         try:
-            self.chat_instance.append(user(prompt))
+            # Add system context about CLI capabilities
+            enhanced_prompt = self.add_cli_context(prompt)
+            self.chat_instance.append(user(enhanced_prompt))
             
             if stream:
                 response_text = self.stream_response()
@@ -471,21 +805,23 @@ class EnhancedCosmicCLI:
                 response = self.chat_instance.sample()
                 full_response = response.content
                 
-                # Simulate streaming effect
-                for i in range(0, len(full_response), 3):
-                    chunk = full_response[i:i+3]
+                # Optimized streaming effect - faster chunks and less delay
+                chunk_size = self.cosmic_config.get('stream_chunk_size', 50)
+                for i in range(0, len(full_response), chunk_size):
+                    chunk = full_response[i:i+chunk_size]
                     response_text += chunk
                     
-                    # Create streaming panel
+                    # Create streaming panel with progress indicator
+                    progress_pct = min(100, int((i / len(full_response)) * 100))
                     content = Markdown(response_text + "▋")  # Add cursor
                     panel = Panel(
                         content,
-                        title="🚀 Cosmic Response Stream",
+                        title=f"🚀 Cosmic Response Stream ({progress_pct}%)",
                         border_style="cyan",
                         padding=(1, 2)
                     )
                     live.update(panel)
-                    time.sleep(0.05)  # Streaming effect
+                    time.sleep(0.01)  # Much faster streaming
                 
                 # Final response without cursor
                 final_panel = Panel(
@@ -671,6 +1007,11 @@ class EnhancedCosmicCLI:
             self.console.print(f"[cyan]🌊 Streaming {status}[/cyan]")
         elif cmd == 'analytics':
             self.show_analytics()
+        elif cmd == 'consciousness':
+            if len(cmd_parts) > 1:
+                self.handle_consciousness_command(cmd_parts[1:])
+            else:
+                self.show_consciousness_help()
         elif cmd in ['exit', 'quit']:
             self.console.print("[yellow]🚀 Returning to the cosmic void... Farewell, star traveler![/yellow]")
             return False
@@ -794,6 +1135,238 @@ class EnhancedCosmicCLI:
         analytics_table.add_row("⚡ Messages Today", str(today_stats[0]))
         
         panel = Panel(analytics_table, border_style="yellow", padding=(1, 2))
+        self.console.print(panel)
+    
+    def show_consciousness_help(self):
+        """Display consciousness command help"""
+        help_table = Table(title="🧠 Consciousness Commands", show_header=True, header_style="bold magenta")
+        help_table.add_column("Command", style="cyan", width=30)
+        help_table.add_column("Description", style="white")
+        help_table.add_column("Example", style="dim")
+        
+        commands = [
+            ("show [session_id]", "Display consciousness metrics for session", "/consciousness show"),
+            ("evolution [session_id]", "Show consciousness evolution analysis", "/consciousness evolution"),
+            ("report [session_id]", "Generate comprehensive consciousness report", "/consciousness report"),
+            ("export [session_id] [format]", "Export consciousness data (csv/json)", "/consciousness export json"),
+            ("add [metrics_json]", "Add consciousness metrics manually", "/consciousness add {...}"),
+            ("list", "List sessions with consciousness data", "/consciousness list"),
+        ]
+        
+        for cmd, desc, example in commands:
+            help_table.add_row(cmd, desc, example)
+        
+        panel = Panel(help_table, border_style="purple", padding=(1, 2))
+        self.console.print(panel)
+    
+    def handle_consciousness_command(self, args: List[str]):
+        """Handle consciousness-related commands"""
+        if not args:
+            self.show_consciousness_help()
+            return
+        
+        command = args[0].lower()
+        
+        if command == 'show':
+            session_id = args[1] if len(args) > 1 else self.current_session_id
+            self.show_consciousness_metrics(session_id)
+        elif command == 'evolution':
+            session_id = args[1] if len(args) > 1 else self.current_session_id
+            self.show_consciousness_evolution(session_id)
+        elif command == 'report':
+            session_id = args[1] if len(args) > 1 else self.current_session_id
+            self.generate_consciousness_report(session_id)
+        elif command == 'export':
+            session_id = args[1] if len(args) > 1 else self.current_session_id
+            format_type = args[2] if len(args) > 2 else 'json'
+            self.export_consciousness_data(session_id, format_type)
+        elif command == 'add':
+            if len(args) > 1:
+                self.add_consciousness_metrics_manual(' '.join(args[1:]))
+            else:
+                self.console.print("[red]Error: Metrics data required[/red]")
+        elif command == 'list':
+            self.list_consciousness_sessions()
+        else:
+            self.console.print(f"[red]Unknown consciousness command: {command}[/red]")
+            self.show_consciousness_help()
+    
+    def show_consciousness_metrics(self, session_id: str):
+        """Display consciousness metrics for a session"""
+        metrics = self.db.get_consciousness_metrics(session_id, limit=10)
+        
+        if not metrics:
+            self.console.print(f"[yellow]No consciousness data found for session: {session_id}[/yellow]")
+            return
+        
+        metrics_table = Table(title=f"🧠 Consciousness Metrics - {session_id[:20]}...", 
+                            show_header=True, header_style="bold cyan")
+        metrics_table.add_column("Timestamp", style="blue", width=16)
+        metrics_table.add_column("Overall", style="green", justify="right")
+        metrics_table.add_column("Coherence", style="yellow", justify="right")
+        metrics_table.add_column("Self-Reflect", style="magenta", justify="right")
+        metrics_table.add_column("Meta-Cog", style="cyan", justify="right")
+        metrics_table.add_column("Velocity", style="red", justify="right")
+        
+        for metric in metrics[-5:]:  # Show last 5
+            timestamp = datetime.fromisoformat(metric['timestamp']).strftime("%m-%d %H:%M:%S")
+            metrics_table.add_row(
+                timestamp,
+                f"{metric['overall_score']:.3f}",
+                f"{metric['coherence']:.3f}",
+                f"{metric['self_reflection']:.3f}",
+                f"{metric['meta_cognitive_awareness']:.3f}",
+                f"{metric['consciousness_velocity']:+.3f}"
+            )
+        
+        panel = Panel(metrics_table, border_style="cyan", padding=(1, 2))
+        self.console.print(panel)
+    
+    def show_consciousness_evolution(self, session_id: str):
+        """Display consciousness evolution analysis"""
+        evolution = self.db.get_consciousness_evolution(session_id)
+        
+        if 'error' in evolution:
+            self.console.print(f"[red]{evolution['error']}[/red]")
+            return
+        
+        # Evolution summary table
+        summary_table = Table(title="📈 Consciousness Evolution Summary", show_header=False, box=None)
+        summary_table.add_column("Metric", style="cyan", width=20)
+        summary_table.add_column("Value", style="green")
+        
+        evo_summary = evolution['evolution_summary']
+        summary_table.add_row("📊 Data Points", str(evolution['data_points']))
+        summary_table.add_row("🌱 Initial Score", f"{evo_summary['initial_score']:.3f}")
+        summary_table.add_row("🎯 Final Score", f"{evo_summary['final_score']:.3f}")
+        summary_table.add_row("📈 Change", f"{evo_summary['change']:+.3f}")
+        summary_table.add_row("🏔️  Peak Score", f"{evo_summary['max_score']:.3f}")
+        summary_table.add_row("⚡ Avg Velocity", f"{evolution['velocity_analysis']['average_velocity']:+.3f}")
+        summary_table.add_row("🎢 Trend", evolution['velocity_analysis']['acceleration_trend'].title())
+        
+        panel = Panel(summary_table, border_style="green", padding=(1, 2))
+        self.console.print(panel)
+    
+    def generate_consciousness_report(self, session_id: str):
+        """Generate and display consciousness report"""
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Generating consciousness report...", total=100)
+            
+            report = self.db.create_consciousness_report(session_id)
+            
+            progress.update(task, completed=100)
+        
+        if 'error' in report:
+            self.console.print(f"[red]{report['error']}[/red]")
+            return
+        
+        # Display report summary
+        report_content = f"""# Consciousness Report
+
+**Session:** {report['session_info']['name']}
+**Generated:** {report['generated_at']}
+
+## Evolution Summary
+- Initial Score: {report['consciousness_evolution']['initial_score']:.3f}
+- Final Score: {report['consciousness_evolution']['final_score']:.3f}
+- Change: {report['consciousness_evolution']['change']:+.3f}
+- Peak: {report['consciousness_evolution']['max_score']:.3f}
+
+## Key Insights
+"""
+        
+        for insight in report['insights']:
+            report_content += f"- {insight}\n"
+        
+        report_content += f"\n## Emergence Events: {len(report['emergence_events'])}"
+        report_content += f"\n## Significant Changes: {len(report['significant_changes'])}"
+        
+        panel = Panel(
+            Markdown(report_content),
+            title=f"🧠 Consciousness Report - {report['report_id']}",
+            border_style="purple",
+            padding=(1, 2)
+        )
+        self.console.print(panel)
+        
+        # Ask if user wants to save report
+        if click.confirm("Save full report to file?"):
+            filename = f"consciousness_report_{session_id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(filename, 'w') as f:
+                json.dump(report, f, indent=2, default=str)
+            self.console.print(f"[green]Report saved to {filename}[/green]")
+    
+    def export_consciousness_data(self, session_id: str, format_type: str = 'json'):
+        """Export consciousness data"""
+        data = self.db.export_consciousness_data(session_id, format_type)
+        
+        if not data or data == '[]':
+            self.console.print(f"[yellow]No consciousness data found for session: {session_id}[/yellow]")
+            return
+        
+        # Save to file
+        ext = 'csv' if format_type == 'csv' else 'json'
+        filename = f"consciousness_data_{session_id[:8] if session_id else 'all'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+        
+        with open(filename, 'w') as f:
+            f.write(data)
+        
+        self.console.print(f"[green]Consciousness data exported to {filename}[/green]")
+        self.console.print(f"[dim]Format: {format_type.upper()}, Size: {len(data)} bytes[/dim]")
+    
+    def add_consciousness_metrics_manual(self, metrics_json: str):
+        """Add consciousness metrics manually from JSON"""
+        try:
+            metrics = json.loads(metrics_json)
+            self.db.add_consciousness_metrics(self.current_session_id, metrics)
+            self.console.print(f"[green]Consciousness metrics added to session {self.current_session_id}[/green]")
+        except json.JSONDecodeError as e:
+            self.console.print(f"[red]Invalid JSON format: {e}[/red]")
+        except Exception as e:
+            self.console.print(f"[red]Error adding metrics: {e}[/red]")
+    
+    def list_consciousness_sessions(self):
+        """List sessions that have consciousness data"""
+        conn = sqlite3.connect(self.db.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT s.session_id, s.name, s.created_at, COUNT(cm.id) as metric_count,
+                   AVG(cm.overall_score) as avg_score, MAX(cm.overall_score) as max_score
+            FROM sessions s
+            JOIN consciousness_metrics cm ON s.session_id = cm.session_id
+            GROUP BY s.session_id, s.name, s.created_at
+            ORDER BY s.created_at DESC
+        """)
+        
+        sessions = cursor.fetchall()
+        conn.close()
+        
+        if not sessions:
+            self.console.print("[yellow]No sessions with consciousness data found[/yellow]")
+            return
+        
+        sessions_table = Table(title="🧠 Sessions with Consciousness Data", 
+                             show_header=True, header_style="bold purple")
+        sessions_table.add_column("Session ID", style="yellow", width=20)
+        sessions_table.add_column("Name", style="green", width=25)
+        sessions_table.add_column("Data Points", style="cyan", justify="right")
+        sessions_table.add_column("Avg Score", style="blue", justify="right")
+        sessions_table.add_column("Peak Score", style="magenta", justify="right")
+        sessions_table.add_column("Created", style="dim")
+        
+        for session in sessions[:10]:  # Show top 10
+            created = datetime.fromisoformat(session[2]).strftime("%m-%d")
+            sessions_table.add_row(
+                session[0][:18] + "...",
+                session[1][:23] + "..." if len(session[1]) > 23 else session[1],
+                str(session[3]),
+                f"{session[4]:.3f}",
+                f"{session[5]:.3f}",
+                created
+            )
+        
+        panel = Panel(sessions_table, border_style="purple", padding=(1, 2))
         self.console.print(panel)
 
 # Enhanced CLI interface
@@ -935,6 +1508,54 @@ def sessions():
     """Manage conversation sessions"""
     cosmic = EnhancedCosmicCLI()
     cosmic.show_sessions()
+
+@cli.command()
+@click.argument('action', type=click.Choice(['show', 'evolution', 'report', 'export', 'list']))
+@click.option('--session', '-s', help='Session ID to analyze')
+@click.option('--format', type=click.Choice(['json', 'csv']), default='json', help='Export format')
+@click.option('--output', '-o', help='Output file path')
+def consciousness(action, session, format, output):
+    """Manage consciousness data and generate reports"""
+    cosmic = EnhancedCosmicCLI()
+    
+    if action == 'show':
+        session_id = session or cosmic.current_session_id
+        if session_id:
+            cosmic.show_consciousness_metrics(session_id)
+        else:
+            cosmic.console.print("[red]No session specified[/red]")
+    
+    elif action == 'evolution':
+        session_id = session or cosmic.current_session_id
+        if session_id:
+            cosmic.show_consciousness_evolution(session_id)
+        else:
+            cosmic.console.print("[red]No session specified[/red]")
+    
+    elif action == 'report':
+        session_id = session or cosmic.current_session_id
+        if session_id:
+            cosmic.generate_consciousness_report(session_id)
+        else:
+            cosmic.console.print("[red]No session specified[/red]")
+    
+    elif action == 'export':
+        session_id = session or cosmic.current_session_id
+        data = cosmic.db.export_consciousness_data(session_id, format)
+        
+        if not data or data == '[]':
+            cosmic.console.print("[yellow]No consciousness data found[/yellow]")
+            return
+        
+        if output:
+            with open(output, 'w') as f:
+                f.write(data)
+            cosmic.console.print(f"[green]Data exported to {output}[/green]")
+        else:
+            click.echo(data)
+    
+    elif action == 'list':
+        cosmic.list_consciousness_sessions()
 
 @cli.command()
 @click.argument('command_text')

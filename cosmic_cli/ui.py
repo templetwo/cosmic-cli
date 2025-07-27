@@ -24,7 +24,7 @@ class DirectivesUI(App):
     def compose(self) -> ComposeResult:
         yield Static(self.figlet.renderText('COSMIC CLI'), classes="banner")
         yield DataTable(id="directives")
-        yield TextArea(id="directive_input", placeholder="Enter or paste directive here... (supports multi-line)")
+        yield TextArea(id="directive_input")
         yield Vertical(id="logs_container")
 
     def on_mount(self):
@@ -33,7 +33,7 @@ class DirectivesUI(App):
         table.cursor_type = "row"
         input_widget = self.query_one("#directive_input", TextArea)
         # Add submit binding
-        self.bind("enter", self.on_submit, selector="#directive_input")
+        self.bind("enter", self.on_submit)
 
     def on_submit(self):
         input_widget = self.query_one("#directive_input", TextArea)

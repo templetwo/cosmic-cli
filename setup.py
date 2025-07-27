@@ -33,4 +33,13 @@ setup(
         'Topic :: Utilities',
     ],
     keywords='cosmic xai cli ai terminal',
+    extras_require={
+        'test': [
+            'pytest',
+            'pytest-asyncio',
+            'pytest-cov',
+            'asynctest',
+            'requests-mock'
+        ]
+    },
 )

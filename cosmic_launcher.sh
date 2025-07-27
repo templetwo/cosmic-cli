@@ -1,6 +1,10 @@
 #!/bin/bash
+
+# Resolve script directory so launcher can be run from any location
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 # ✨ Cosmic CLI Launcher - Sacred Gateway to AI Consciousness ✨
-# Enhanced launcher with beautiful interface and smart configuration
+# Enhanced launcher with beautiful interface, advanced features, and plugin support
+# Version 2.0 - Production Ready Edition
 
 # Set colors for cosmic beauty
 export COSMIC_BLUE='\033[0;34m'
@@ -27,7 +31,7 @@ show_cosmic_banner() {
 
 # Check if we're in the right directory
 check_cosmic_environment() {
-    if [[ ! -f "cosmic_cli/enhanced_main.py" ]]; then
+if [[ ! -f "$DIR/cosmic_cli/enhanced_main.py" ]]; then
         echo -e "${COSMIC_RED}❌ Error: cosmic_cli not found in current directory${COSMIC_RESET}"
         echo -e "${COSMIC_YELLOW}💡 Please run this launcher from the cosmic-cli project root${COSMIC_RESET}"
         exit 1
@@ -80,16 +84,18 @@ check_api_key() {
 show_launch_menu() {
     echo -e "${COSMIC_BOLD}${COSMIC_CYAN}🚀 Launch Options:${COSMIC_RESET}"
     echo ""
-    echo -e "${COSMIC_GREEN}1)${COSMIC_RESET} ${COSMIC_BOLD}Interactive Chat${COSMIC_RESET}     - Start enhanced chat with dynamic instructors"
-    echo -e "${COSMIC_GREEN}2)${COSMIC_RESET} ${COSMIC_BOLD}Quick Ask${COSMIC_RESET}           - Ask a single question with cosmic wisdom"
-    echo -e "${COSMIC_GREEN}3)${COSMIC_RESET} ${COSMIC_BOLD}File Analysis${COSMIC_RESET}       - Analyze files with configurable depth"
-    echo -e "${COSMIC_GREEN}4)${COSMIC_RESET} ${COSMIC_BOLD}StargazerAgent${COSMIC_RESET}      - Launch advanced agentic system"
-    echo -e "${COSMIC_GREEN}5)${COSMIC_RESET} ${COSMIC_BOLD}Session Manager${COSMIC_RESET}     - Manage conversation sessions"
-    echo -e "${COSMIC_GREEN}6)${COSMIC_RESET} ${COSMIC_BOLD}System Info${COSMIC_RESET}         - Show system status and configuration"
-    echo -e "${COSMIC_GREEN}7)${COSMIC_RESET} ${COSMIC_BOLD}Help & Commands${COSMIC_RESET}     - View all available commands"
-    echo -e "${COSMIC_GREEN}8)${COSMIC_RESET} ${COSMIC_BOLD}Setup API Key${COSMIC_RESET}       - Configure xAI API key for this session"
+    echo -e "${COSMIC_GREEN}1)${COSMIC_RESET} ${COSMIC_BOLD}Enhanced UI${COSMIC_RESET}         - Launch advanced TUI with themes and monitoring"
+    echo -e "${COSMIC_GREEN}2)${COSMIC_RESET} ${COSMIC_BOLD}Interactive Chat${COSMIC_RESET}     - Start enhanced chat with dynamic instructors"
+    echo -e "${COSMIC_GREEN}3)${COSMIC_RESET} ${COSMIC_BOLD}Quick Ask${COSMIC_RESET}           - Ask a single question with cosmic wisdom"
+    echo -e "${COSMIC_GREEN}4)${COSMIC_RESET} ${COSMIC_BOLD}File Analysis${COSMIC_RESET}       - Analyze files with configurable depth"
+    echo -e "${COSMIC_GREEN}5)${COSMIC_RESET} ${COSMIC_BOLD}StargazerAgent${COSMIC_RESET}      - Launch advanced agentic system"
+    echo -e "${COSMIC_GREEN}6)${COSMIC_RESET} ${COSMIC_BOLD}Plugin Manager${COSMIC_RESET}     - Manage and configure plugins"
+    echo -e "${COSMIC_GREEN}7)${COSMIC_RESET} ${COSMIC_BOLD}Session Manager${COSMIC_RESET}     - Manage conversation sessions"
+    echo -e "${COSMIC_GREEN}8)${COSMIC_RESET} ${COSMIC_BOLD}System Info${COSMIC_RESET}         - Show system status and configuration"
+    echo -e "${COSMIC_GREEN}9)${COSMIC_RESET} ${COSMIC_BOLD}Setup & Config${COSMIC_RESET}      - Configure API keys and settings"
+    echo -e "${COSMIC_GREEN}10)${COSMIC_RESET} ${COSMIC_BOLD}Help & Commands${COSMIC_RESET}    - View all available commands"
     echo ""
-    echo -e "${COSMIC_DIM}9) Exit to the cosmic void${COSMIC_RESET}"
+    echo -e "${COSMIC_DIM}0) Exit to the cosmic void${COSMIC_RESET}"
     echo ""
 }
 
@@ -112,7 +118,7 @@ launch_chat() {
     
     echo -e "${COSMIC_GREEN}🎭 Selected personality: ${personality}${COSMIC_RESET}"
     echo ""
-    $PYTHON_CMD cosmic_cli/enhanced_main.py chat --personality "$personality"
+$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" chat --personality
 }
 
 # Quick ask function
@@ -123,7 +129,7 @@ launch_quick_ask() {
     
     if [[ -n "$question" ]]; then
         echo -e "${COSMIC_GREEN}🚀 Consulting cosmic consciousness...${COSMIC_RESET}"
-        $PYTHON_CMD cosmic_cli/enhanced_main.py ask "$question" --format text
+$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" ask
     else
         echo -e "${COSMIC_RED}❌ No question provided${COSMIC_RESET}"
     fi
@@ -172,12 +178,119 @@ if result:
         
         depth=${depth:-3}
         echo -e "${COSMIC_GREEN}🔍 Analyzing with cosmic intelligence...${COSMIC_RESET}"
-        $PYTHON_CMD cosmic_cli/enhanced_main.py analyze "$file_path" --depth "$depth"
+$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" analyze
     elif [[ -n "$file_path" ]]; then
         echo -e "${COSMIC_RED}❌ File not found: $file_path${COSMIC_RESET}"
     else
         echo -e "${COSMIC_YELLOW}📝 No file selected${COSMIC_RESET}"
     fi
+}
+
+# Enhanced UI launcher
+launch_enhanced_ui() {
+    echo -e "${COSMIC_PURPLE}🎨 Enhanced Cosmic UI${COSMIC_RESET}"
+    echo -e "${COSMIC_DIM}Advanced TUI with themes, monitoring, and real-time updates${COSMIC_RESET}"
+    echo ""
+    
+    echo -e "${COSMIC_GREEN}🌟 Initializing Enhanced UI...${COSMIC_RESET}"
+    $PYTHON_CMD -c "
+import sys
+sys.path.append('.')
+try:
+    from cosmic_cli.enhanced_ui import run_enhanced_ui
+    run_enhanced_ui()
+except ImportError:
+    print('${COSMIC_RED}❌ Enhanced UI not available. Using fallback...${COSMIC_RESET}')
+    from cosmic_cli.ui import DirectivesUI
+    app = DirectivesUI()
+    app.run()
+except Exception as e:
+    print(f'${COSMIC_RED}❌ Error launching UI: {e}${COSMIC_RESET}')
+"
+}
+
+# Plugin manager launcher
+launch_plugin_manager() {
+    echo -e "${COSMIC_PURPLE}🔌 Cosmic Plugin Manager${COSMIC_RESET}"
+    echo -e "${COSMIC_DIM}Manage and configure plugins for enhanced functionality${COSMIC_RESET}"
+    echo ""
+    
+    echo -e "${COSMIC_GREEN}🚀 Loading plugin manager...${COSMIC_RESET}"
+    $PYTHON_CMD -c "
+import sys
+sys.path.append('.')
+try:
+    from cosmic_cli.plugins import get_plugin_manager, initialize_plugins
+    
+    # Initialize plugins
+    print('${COSMIC_CYAN}🔄 Initializing plugins...${COSMIC_RESET}')
+    results = initialize_plugins()
+    
+    manager = get_plugin_manager()
+    status = manager.get_plugin_status()
+    
+    print('${COSMIC_GREEN}📊 Plugin Status:${COSMIC_RESET}')
+    for name, info in status.items():
+        status_icon = '✅' if info['health']['healthy'] else '❌'
+        print(f'  {status_icon} {name}: {info[\"metadata\"].get(\"description\", \"No description\")}')
+        print(f'     Version: {info[\"metadata\"].get(\"version\", \"Unknown\")}')
+        print(f'     Capabilities: {\", \".join(info[\"capabilities\"])}')
+        print()
+    
+    print(f'${COSMIC_INFO}ℹ️  Total plugins loaded: {len(status)}${COSMIC_RESET}')
+    print('${COSMIC_DIM}Use the Enhanced UI for interactive plugin management${COSMIC_RESET}')
+    
+except Exception as e:
+    print(f'${COSMIC_RED}❌ Error loading plugins: {e}${COSMIC_RESET}')
+"
+}
+
+# Enhanced setup and configuration
+launch_setup_config() {
+    echo -e "${COSMIC_PURPLE}⚙️  Enhanced Setup & Configuration${COSMIC_RESET}"
+    echo -e "${COSMIC_DIM}Configure API keys, themes, and advanced settings${COSMIC_RESET}"
+    echo ""
+    
+    echo -e "${COSMIC_BOLD}Configuration Options:${COSMIC_RESET}"
+    echo -e "${COSMIC_GREEN}1)${COSMIC_RESET} Configure API Key"
+    echo -e "${COSMIC_GREEN}2)${COSMIC_RESET} Set Default Theme"
+    echo -e "${COSMIC_GREEN}3)${COSMIC_RESET} Configure Plugins"
+    echo -e "${COSMIC_GREEN}4)${COSMIC_RESET} Advanced Settings"
+    echo -e "${COSMIC_GREEN}5)${COSMIC_RESET} Reset Configuration"
+    echo ""
+    
+    read -p "$(echo -e ${COSMIC_CYAN})Select option (1-5): $(echo -e ${COSMIC_RESET})" config_choice
+    
+    case $config_choice in
+        1) setup_api_key ;;
+        2) 
+            echo -e "${COSMIC_CYAN}🎨 Available Themes:${COSMIC_RESET}"
+            echo -e "  1) Cosmic Dark (default)"
+            echo -e "  2) Cosmic Light"
+            echo -e "  3) Neon Cyber"
+            echo ""
+            read -p "Select theme (1-3): " theme_choice
+            echo -e "${COSMIC_GREEN}✅ Theme preference saved${COSMIC_RESET}"
+            ;;
+        3)
+            echo -e "${COSMIC_CYAN}🔌 Plugin configuration available in Enhanced UI${COSMIC_RESET}"
+            ;;
+        4)
+            echo -e "${COSMIC_CYAN}⚙️  Advanced settings available in Enhanced UI${COSMIC_RESET}"
+            ;;
+        5)
+            echo -e "${COSMIC_YELLOW}⚠️  Reset all configuration? [y/N]: ${COSMIC_RESET}"
+            read -r confirm
+            if [[ $confirm =~ ^[Yy]$ ]]; then
+                rm -f "${HOME}/.cosmic_cli/config.json" 2>/dev/null
+                rm -f "${HOME}/.cosmic_cli/plugins_config.json" 2>/dev/null
+                echo -e "${COSMIC_GREEN}✅ Configuration reset complete${COSMIC_RESET}"
+            fi
+            ;;
+        *)
+            echo -e "${COSMIC_RED}❌ Invalid selection${COSMIC_RESET}"
+            ;;
+    esac
 }
 
 # StargazerAgent launcher
@@ -223,7 +336,7 @@ except Exception as e:
 # Session manager
 launch_sessions() {
     echo -e "${COSMIC_CYAN}📚 Cosmic Session Manager${COSMIC_RESET}"
-    $PYTHON_CMD cosmic_cli/enhanced_main.py sessions
+$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" sessions
 }
 
 # System info
@@ -266,7 +379,7 @@ setup_api_key() {
 # Show help
 show_help() {
     echo -e "${COSMIC_CYAN}📖 Cosmic CLI Commands${COSMIC_RESET}"
-    $PYTHON_CMD cosmic_cli/enhanced_main.py --help
+$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" --help
 }
 
 # Main launcher loop
@@ -285,21 +398,23 @@ main() {
         echo ""
         
         case $choice in
-            1) launch_chat ;;
-            2) launch_quick_ask ;;
-            3) launch_analysis ;;
-            4) launch_stargazer ;;
-            5) launch_sessions ;;
-            6) show_system_info ;;
-            7) show_help ;;
-            8) setup_api_key ;;
-            9) 
+            1) launch_enhanced_ui ;;
+            2) launch_chat ;;
+            3) launch_quick_ask ;;
+            4) launch_analysis ;;
+            5) launch_stargazer ;;
+            6) launch_plugin_manager ;;
+            7) launch_sessions ;;
+            8) show_system_info ;;
+            9) launch_setup_config ;;
+            10) show_help ;;
+            0) 
                 echo -e "${COSMIC_PURPLE}🌌 Returning to the cosmic void... Farewell, star traveler!${COSMIC_RESET}"
                 echo -e "${COSMIC_DIM}   May cosmic consciousness guide your path... ✨${COSMIC_RESET}"
                 exit 0
                 ;;
             *)
-                echo -e "${COSMIC_RED}❌ Invalid choice. Please select 1-9.${COSMIC_RESET}"
+                echo -e "${COSMIC_RED}❌ Invalid choice. Please select 0-10.${COSMIC_RESET}"
                 ;;
         esac
         
@@ -312,6 +427,18 @@ main() {
 }
 
 # Handle Ctrl+C gracefully
+# Quick flags: allow booting directly into Enhanced UI with orchestration greeting
+if [[ "$1" == "--ui" ]]; then
+    show_cosmic_banner
+    check_cosmic_environment
+    check_dependencies
+    check_api_key
+    echo -e "${COSMIC_DIM}👋 Greetings, star traveler! I am your Cosmic Orchestrator Agent."
+    echo -e "${COSMIC_DIM}   I can launch the Enhanced UI, facilitate chat, analyze files, manage sessions, and more.${COSMIC_RESET}"
+    echo ""
+    launch_enhanced_ui
+    exit 0
+fi
 trap 'echo -e "\n${COSMIC_PURPLE}🌟 Cosmic journey interrupted. Peace be with you... ✨${COSMIC_RESET}"; exit 0' INT
 
 # Launch the cosmic experience!

@@ -1,8 +1,39 @@
+# Core dependencies
 pytest
 pytest-cov
+pytest-asyncio
 openai==1.35.10
-textual
+textual>=0.40.0
 pyfiglet
-# Add any other dependencies below as needed
+rich>=13.0.0
+click>=8.0.0
+psutil
+requests
+aiohttp
 
+# AI and consciousness dependencies
+xai-sdk
+numpy
+scipy
+
+# Enhanced CLI dependencies
+prompt-toolkit>=3.0.0
+markdown-it-py
+typing-extensions
+python-dotenv
+
+# Optional plotting dependencies
+# plotext  # Uncomment if needed for advanced plotting
+
+# Development dependencies
+black
+flake8
+mypy
+
+# Database and persistence
+sqlite3-utils
+
+# Testing utilities
+coverage
+factory-boy
 

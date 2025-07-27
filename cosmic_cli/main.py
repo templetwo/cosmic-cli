@@ -171,16 +171,8 @@ def cli(ask, analyze, hack, run_command):
     """
     Cosmic CLI: Your cosmic companion.
     """
-    if ask:
-        ask_command(ask)
-    elif analyze:
-        analyze_command(analyze)
-    elif hack:
-        hack_command(hack)
-    elif run_command:
-        run_command_command(run_command)
-    else:
-        chat_command()
+    # Let click handle subcommands directly
+    pass
 
 # Rename original commands to functions
 def chat_command():
