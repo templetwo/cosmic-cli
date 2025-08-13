@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentAction:
     """A dataclass to store information about a single agent action."""
-    timestamp: datetime = field(default_factory=datetime.now)
     action_type: str
     content: str
     success: bool
     output: str
+    timestamp: datetime = field(default_factory=datetime.now)
 
 
 class StargazerAgent:
