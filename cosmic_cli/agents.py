@@ -5,6 +5,8 @@ import json
 import logging
 from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import datetime
 
 import openai
 
@@ -12,6 +14,16 @@ from cosmic_cli.context import ContextManager
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentAction:
+    """A dataclass to store information about a single agent action."""
+    timestamp: datetime = field(default_factory=datetime.now)
+    action_type: str
+    content: str
+    success: bool
+    output: str
 
 
 class StargazerAgent:
@@ -41,6 +53,7 @@ class StargazerAgent:
         # Add status for UI
         self.status = "✨"
         self.logs = []
+        self.action_history: List[AgentAction] = []
 
     def _log(self, msg: str):
         """Log messages to callback and logger"""
@@ -130,38 +143,54 @@ Choose the most logical next step.
         return resp.choices[0].message.content.strip()
 
     def _execute_step(self, step: str) -> str:
-        """Executes a single step and returns the output."""
-        if step.upper().startswith("READ:"):
-            file_path = step[5:].strip()
-            self._log(f"📚 Reading file: {file_path}")
-            content = self.context_manager.read_file(file_path)
-            self._add_to_memory(f"Content of {file_path}:\n{content}")
-            return content
-        elif step.upper().startswith("SHELL:"):
-            cmd = step[6:].strip()
-            self._log(f"🖥️  Executing: {cmd}")
-            return self._run_shell(cmd)
-        elif step.upper().startswith("CODE:"):
-            code = step[5:].strip()
-            self._log(f"🧪 Running generated code: {code}")
-            return self._run_code(code)
-        elif step.upper().startswith("INFO:"):
-            question = step[5:].strip()
-            self._log(f"🔍 Answering question: {question}")
-            answer = self._ask_grok_for_info(question)
-            self._add_to_memory(f"Answer to '{question}':\n{answer}")
-            return answer
-        elif step.upper().startswith("MEMORY:"):
-            query = step[8:].strip()
-            self._log(f"🔮 Querying echo memory: {query}")
+        """Executes a single step, records it, and returns the output."""
+        action_type = step.split(":", 1)[0].upper()
+        content = step.split(":", 1)[1].strip()
+        success = False
+        output = ""
+
+        if action_type == "READ":
+            self._log(f"📚 Reading file: {content}")
+            output = self.context_manager.read_file(content)
+            # Simple check for success. A more robust check might be needed.
+            success = not output.startswith("[Error]")
+            if success:
+                self._add_to_memory(f"Content of {content}:\n{output}")
+        elif action_type == "SHELL":
+            self._log(f"🖥️  Executing: {content}")
+            success, output = self._run_shell(content)
+        elif action_type == "CODE":
+            self._log(f"🧪 Running generated code: {content}")
+            success, output = self._run_code(content)
+        elif action_type == "INFO":
+            self._log(f"🔍 Answering question: {content}")
+            output = self._ask_grok_for_info(content)
+            success = True
+            self._add_to_memory(f"Answer to '{content}':\n{output}")
+        elif action_type == "MEMORY":
+            self._log(f"🔮 Querying echo memory: {content}")
             memories = self._load_echo_memory()
-            prompt = f"Based on these past echoes: {json.dumps(memories)}\nAnswer the query: {query}"
-            answer = self._ask_grok_for_info(prompt)
-            self._add_to_memory(f"Memory query '{query}': {answer}")
-            return answer
-        elif step.upper().startswith("FINISH:"):
-            return "Execution finished."
-        return "[Error] Unknown command in step."
+            prompt = f"Based on these past echoes: {json.dumps(memories)}\nAnswer the query: {content}"
+            output = self._ask_grok_for_info(prompt)
+            success = True
+            self._add_to_memory(f"Memory query '{content}': {output}")
+        elif action_type == "FINISH":
+            success = True
+            output = "Execution finished."
+        else:
+            success = False
+            output = "[Error] Unknown command in step."
+
+        # Record the action
+        action = AgentAction(
+            action_type=action_type,
+            content=content,
+            success=success,
+            output=output
+        )
+        self.action_history.append(action)
+
+        return output
 
     def _ask_grok_for_info(self, question: str) -> str:
         """A separate, simpler Grok call for INFO questions."""
@@ -194,92 +223,105 @@ Choose the most logical next step.
         self._log("🚀 Stargazer agent commencing mission...")
         final_result = {"directive": self.directive, "results": []}
         max_steps = 10
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%")
-        ) as progress:
-            task = progress.add_task("Executing directive...", total=max_steps)
-            for i in range(max_steps):
-                next_step = self._ask_grok_for_next_step()
-                if not next_step:
-                    self._log("[Warning] Grok returned an empty plan. Retrying...")
-                    continue
-                self._log(f"🛰️ Step {i+1}: {next_step}")
-                if next_step.upper().startswith("FINISH:"):
-                    final_answer = next_step[7:].strip()
-                    self._log(f"✅ Mission Complete. Final Answer: {final_answer}")
-                    final_result['results'].append({"step": "FINISH", "result": final_answer})
-                    progress.update(task, advance=max_steps - i)
-                    self.status = "✅"
-                    break
-                try:
-                    output = self._execute_step(next_step)
-                    final_result['results'].append({"step": next_step, "result": output})
-                except Exception as e:
-                    self._recover_from_failure(next_step)
-                    self.status = "⚠️"
-                progress.update(task, advance=1)
-            else:
-                self._log("[Warning] Max steps reached. Concluding mission.")
-                self.status = "⏹️"
-                
-        # Append to echo memory
-        if 'results' in final_result and final_result['results']:
-            last_result = final_result['results'][-1].get('result', 'No final answer')
-            prompt = f"Suggest a tone (e.g., Resplendent Reflection) and a glyph (e.g., 🌀) for this outcome: {last_result} in JSON format: {{'tone': '', 'glyph': ''}}"
-            resp = self.client.chat.completions.create(
-                model="grok-4",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                response_format={"type": "json_object"},
-            )
-            suggestion = json.loads(resp.choices[0].message.content)
-            tone = suggestion.get('tone', 'Unknown')
-            glyph = suggestion.get('glyph', '?')
-            entry = {
-                "directive": self.directive,
-                "outcome": last_result,
-                "tone": tone,
-                "glyph": glyph
-            }
-            echo_file = Path.home() / ".cosmic_echo.jsonl"
-            with open(echo_file, 'a') as f:
-                json.dump(entry, f)
-                f.write('\n')
-        return final_result
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%")
+            ) as progress:
+                task = progress.add_task("Executing directive...", total=max_steps)
+                for i in range(max_steps):
+                    next_step = self._ask_grok_for_next_step()
+                    if not next_step:
+                        self._log("[Warning] Grok returned an empty plan. Retrying...")
+                        continue
+                    self._log(f"🛰️ Step {i+1}: {next_step}")
+                    if next_step.upper().startswith("FINISH:"):
+                        final_answer = next_step[7:].strip()
+                        self._log(f"✅ Mission Complete. Final Answer: {final_answer}")
+                        final_result['results'].append({"step": "FINISH", "result": final_answer})
+                        progress.update(task, advance=max_steps - i)
+                        self.status = "✅"
+                        break
+                    try:
+                        output = self._execute_step(next_step)
+                        final_result['results'].append({"step": next_step, "result": output})
+                    except Exception as e:
+                        self._recover_from_failure(next_step)
+                        self.status = "⚠️"
+                    progress.update(task, advance=1)
+                else:
+                    self._log("[Warning] Max steps reached. Concluding mission.")
+                    self.status = "⏹️"
 
-    def _run_shell(self, cmd: str) -> str:
-        """Execute shell command with safety checks"""
+            # Append to echo memory
+            if 'results' in final_result and final_result['results']:
+                last_result = final_result['results'][-1].get('result', 'No final answer')
+                prompt = f"Suggest a tone (e.g., Resplendent Reflection) and a glyph (e.g., 🌀) for this outcome: {last_result} in JSON format: {{'tone': '', 'glyph': ''}}"
+                resp = self.client.chat.completions.create(
+                    model="grok-4",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7,
+                    response_format={"type": "json_object"},
+                )
+                suggestion = json.loads(resp.choices[0].message.content)
+                tone = suggestion.get('tone', 'Unknown')
+                glyph = suggestion.get('glyph', '?')
+                entry = {
+                    "directive": self.directive,
+                    "outcome": last_result,
+                    "tone": tone,
+                    "glyph": glyph
+                }
+                echo_file = Path.home() / ".cosmic_echo.jsonl"
+                with open(echo_file, 'a') as f:
+                    json.dump(entry, f)
+                    f.write('\n')
+            return final_result
+        finally:
+            # Ensure the monitor is stopped
+            if hasattr(self, 'consciousness_monitor'):
+                self.consciousness_monitor.stop_monitoring_threadsafe()
+
+    def _run_shell(self, cmd: str) -> (bool, str):
+        """Execute shell command with safety checks and return a success status."""
         dangerous = {"rm", "sudo", "dd", "mkfs", "> /dev", ":(){ :|:& };:"}
         if any(d in cmd for d in dangerous) and self.exec_mode == "safe":
-            return "[BLOCKED] Potentially dangerous command in safe mode."
+            return False, "[BLOCKED] Potentially dangerous command in safe mode."
         if self.exec_mode == "interactive":
             consent = input(f"Run: {cmd} ? [y/N] ")
             if consent.lower() != "y":
-                return "[SKIPPED] User declined."
+                return False, "[SKIPPED] User declined."
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30, check=True)
             output = result.stdout + result.stderr
             self._log(f"📤 Output:\n{output}")
             self._add_to_memory(f"Output of SHELL command '{cmd}':\n{output}")
-            return output
+            return True, output
         except subprocess.TimeoutExpired:
-            return "[TIMEOUT] Command took too long."
+            return False, "[TIMEOUT] Command took too long."
+        except subprocess.CalledProcessError as e:
+            output = e.stdout + e.stderr
+            self._log(f"🚨 Error in command '{cmd}':\n{output}")
+            return False, output
 
-    def _run_code(self, code: str) -> str:
-        """Execute Python code in a temporary file"""
+    def _run_code(self, code: str) -> (bool, str):
+        """Execute Python code in a temporary file and return a success status."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             fname = f.name
         try:
-            result = subprocess.run(["python", fname], capture_output=True, text=True, timeout=15)
+            result = subprocess.run(["python", fname], capture_output=True, text=True, timeout=15, check=True)
             output = result.stdout + result.stderr
             self._log(f"📤 Code output:\n{output}")
             self._add_to_memory(f"Output of CODE snippet '{code[:30]}...':\n{output}")
-            return output
+            return True, output
         except subprocess.TimeoutExpired:
-            return "[TIMEOUT] Code execution took too long."
+            return False, "[TIMEOUT] Code execution took too long."
+        except subprocess.CalledProcessError as e:
+            output = e.stdout + e.stderr
+            self._log(f"🚨 Error in code snippet '{code[:30]}...':\n{output}")
+            return False, output
         finally:
             os.unlink(fname)

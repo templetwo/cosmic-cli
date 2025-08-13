@@ -3,3 +3,13 @@ python-dotenv
 xai-sdk
 rich
 pyfiglet
+numpy
+textual
+openai
+
+[test]
+pytest
+pytest-asyncio
+pytest-cov
+asynctest
+requests-mock
