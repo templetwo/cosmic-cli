@@ -12,6 +12,9 @@ setup(
         'xai-sdk',
         'rich',
         'pyfiglet',
+        'numpy',
+        'textual',
+        'openai',
     ],
     entry_points={
         'console_scripts': [

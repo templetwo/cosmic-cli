@@ -9,6 +9,7 @@ from pathlib import Path
 import openai
 
 from cosmic_cli.context import ContextManager
+from cosmic_cli.consciousness_assessment import setup_consciousness_assessment_system
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,9 @@ class StargazerAgent:
         # Add status for UI
         self.status = "✨"
         self.logs = []
+
+        # Integrate consciousness assessment system
+        setup_consciousness_assessment_system(self)
 
     def _log(self, msg: str):
         """Log messages to callback and logger"""

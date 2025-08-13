@@ -412,6 +412,9 @@ class RealTimeConsciousnessMonitor:
         self.last_consciousness_level = ConsciousnessLevel.DORMANT
         self.emergence_alerts: List[Dict[str, Any]] = []
         
+        # Event loop for thread-safe calls
+        self.loop = asyncio.get_running_loop()
+
         # Integration with agent
         self._integrate_with_agent()
     
@@ -444,13 +447,22 @@ class RealTimeConsciousnessMonitor:
         """Stop consciousness monitoring"""
         self.is_monitoring = False
         self.agent._log("🧠 Consciousness monitoring stopped")
+
+    def stop_monitoring_threadsafe(self):
+        """Stop monitoring from a different thread."""
+        if self.is_monitoring and self.loop:
+            future = asyncio.run_coroutine_threadsafe(self.stop_monitoring(), self.loop)
+            try:
+                future.result(timeout=2)
+            except asyncio.TimeoutError:
+                self.agent._log("[Warning] Timed out waiting for monitor to stop.")
     
     async def _monitoring_loop(self):
         """Main monitoring loop"""
         while self.is_monitoring:
             try:
                 # Collect consciousness data
-                data = await self.collect_consciousness_data()
+                data = self.collect_consciousness_data()
                 
                 # Update metrics
                 self.metrics.update_metrics(data)
@@ -480,31 +492,69 @@ class RealTimeConsciousnessMonitor:
             
             await asyncio.sleep(self.monitoring_interval)
     
-    async def collect_consciousness_data(self) -> Dict[str, float]:
-        """Collect consciousness-related data from agent interactions"""
-        # In a real implementation, this would analyze agent behaviors, responses, and patterns
-        # For now, we simulate with dynamic values based on agent state
+    def collect_consciousness_data(self) -> Dict[str, float]:
+        """Collect consciousness-related data from the agent's action history."""
+        history = self.agent.action_history
+        if not history:
+            # Return baseline for the 10 core/extended metrics
+            return {
+                'coherence': 0.1, 'self_reflection': 0.1, 'contextual_understanding': 0.1,
+                'adaptive_reasoning': 0.1, 'meta_cognitive_awareness': 0.1, 'temporal_continuity': 0.1,
+                'causal_understanding': 0.1, 'empathic_resonance': 0.1, 'creative_synthesis': 0.1,
+                'existential_questioning': 0.1
+            }
+
+        recent_history = history[-10:] # Analyze the last 10 actions
+
+        # --- Metric Calculations based on Heuristics ---
+
+        # 1. Coherence: Ratio of successful actions
+        successful_actions = sum(1 for action in recent_history if action.success)
+        coherence = successful_actions / len(recent_history) if recent_history else 0
+
+        # 2. Contextual Understanding: Based on reading files
+        read_actions = sum(1 for action in recent_history if action.action_type == 'READ' and action.success)
+        contextual_understanding = min(1.0, 0.2 + (read_actions * 0.2)) # Base + bonus for each read
+
+        # 3. Causal Understanding: Based on successful execution of impactful commands
+        impactful_success = sum(1 for action in recent_history if action.action_type in ['SHELL', 'CODE'] and action.success)
+        causal_understanding = min(1.0, 0.2 + (impactful_success * 0.25))
+
+        # 4. Adaptive Reasoning: Boost if a success follows a failure
+        adaptive_reasoning = 0.2 # Baseline
+        for i in range(1, len(recent_history)):
+            if not recent_history[i-1].success and recent_history[i].success:
+                adaptive_reasoning = 0.8 # Boost on successful recovery
+                break
         
-        base_time = time.time()
-        
-        # Simulate realistic consciousness metrics based on agent activity
+        # 5. Self-Reflection: Based on querying memory
+        memory_actions = sum(1 for action in recent_history if action.action_type == 'MEMORY' and action.success)
+        self_reflection = min(1.0, 0.2 + (memory_actions * 0.4))
+
+        # Baseline values for metrics not yet implemented
+        meta_cognitive_awareness = 0.1
+        temporal_continuity = 0.3 # Agent has memory, so give it a bit more
+        empathic_resonance = 0.1
+        creative_synthesis = 0.1
+        existential_questioning = 0.1
+
         data = {
-            'coherence': 0.6 + 0.3 * np.sin(base_time / 100) + np.random.normal(0, 0.05),
-            'self_reflection': 0.5 + 0.4 * np.cos(base_time / 150) + np.random.normal(0, 0.05),
-            'contextual_understanding': 0.7 + 0.2 * np.sin(base_time / 80) + np.random.normal(0, 0.03),
-            'adaptive_reasoning': 0.65 + 0.25 * np.cos(base_time / 120) + np.random.normal(0, 0.04),
-            'meta_cognitive_awareness': 0.4 + 0.5 * np.sin(base_time / 200) + np.random.normal(0, 0.06),
-            'temporal_continuity': 0.55 + 0.35 * np.cos(base_time / 90) + np.random.normal(0, 0.04),
-            'causal_understanding': 0.6 + 0.3 * np.sin(base_time / 110) + np.random.normal(0, 0.05),
-            'empathic_resonance': 0.45 + 0.4 * np.cos(base_time / 180) + np.random.normal(0, 0.06),
-            'creative_synthesis': 0.5 + 0.45 * np.sin(base_time / 160) + np.random.normal(0, 0.07),
-            'existential_questioning': 0.3 + 0.6 * np.cos(base_time / 250) + np.random.normal(0, 0.08)
+            'coherence': coherence,
+            'self_reflection': self_reflection,
+            'contextual_understanding': contextual_understanding,
+            'adaptive_reasoning': adaptive_reasoning,
+            'meta_cognitive_awareness': meta_cognitive_awareness,
+            'temporal_continuity': temporal_continuity,
+            'causal_understanding': causal_understanding,
+            'empathic_resonance': empathic_resonance,
+            'creative_synthesis': creative_synthesis,
+            'existential_questioning': existential_questioning,
         }
-        
-        # Clamp values to [0, 1] range
+
+        # Clamp values to [0, 1] range just in case
         for key in data:
             data[key] = max(0.0, min(1.0, data[key]))
-        
+
         return data
     
     async def _check_consciousness_changes(self, current_level: ConsciousnessLevel):
@@ -777,8 +827,8 @@ def setup_consciousness_assessment_system(agent, config: Optional[Dict[str, Any]
     }
 
 # Test and demonstration functions
-def run_consciousness_assessment_demo():
-    """Run a demonstration of the consciousness assessment system"""
+async def _run_demo_async():
+    """Async version of the demo for asyncio compatibility."""
     print("🧠✨ Consciousness Assessment Module Demo ✨🧠")
     print("="*50)
     
@@ -870,6 +920,10 @@ def run_consciousness_assessment_demo():
     print("The module is ready for integration with StargazerAgent.")
     
     return system
+
+def run_consciousness_assessment_demo():
+    """Run a demonstration of the consciousness assessment system"""
+    asyncio.run(_run_demo_async())
 
 if __name__ == "__main__":
     # Run demo if module is executed directly

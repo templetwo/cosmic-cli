@@ -1,3 +1,4 @@
+import os
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Static, Input, TextArea
 from textual.containers import Vertical
@@ -15,11 +16,12 @@ class DirectivesUI(App):
     .log_panel { margin-top: 1; }
     """
 
-    def __init__(self):
+    def __init__(self, testing: bool = False):
         super().__init__()
         self.agents = {}
         self.show_logs = {}
         self.figlet = Figlet(font='doom')  # Switched to 'doom' for clear, letter-by-letter style
+        self.testing = testing
 
     def compose(self) -> ComposeResult:
         yield Static(self.figlet.renderText('COSMIC CLI'), classes="banner")
@@ -29,11 +31,14 @@ class DirectivesUI(App):
 
     def on_mount(self):
         table = self.query_one("#directives", DataTable)
-        table.add_columns("Directive", "Status", "Logs")
+        table.add_columns("Directive", "Status", "Level", "Score", "Logs")
         table.cursor_type = "row"
         input_widget = self.query_one("#directive_input", TextArea)
         # Add submit binding
         self.bind("enter", self.on_submit)
+        # Add a timer to refresh the panel every second, but not in testing mode
+        if not self.testing:
+            self.set_interval(1, self._refresh_panel)
 
     def on_submit(self):
         input_widget = self.query_one("#directive_input", TextArea)
@@ -45,11 +50,25 @@ class DirectivesUI(App):
             self.add_directive(directive)
             input_widget.clear()
 
+    def thread_safe_refresh(self, agent=None):
+        """A thread-safe way to call _refresh_panel."""
+        self.call_from_thread(self._refresh_panel, agent)
+
     def add_directive(self, directive):
         if directive in self.agents:
             self.notify(f"Directive '{directive}' already deployed!", severity="warning")
             return
-        agent = StargazerAgent(directive, self._refresh_panel)
+
+        api_key = os.getenv("XAI_API_KEY")
+        if not api_key:
+            self.notify("XAI_API_KEY not found in environment variables.", severity="error")
+            return
+
+        agent = StargazerAgent(
+            directive=directive,
+            api_key=api_key,
+            ui_callback=self.thread_safe_refresh
+        )
         self.agents[directive] = agent
         self.show_logs[directive] = False
         agent.run()
@@ -66,8 +85,10 @@ class DirectivesUI(App):
         table = self.query_one("#directives", DataTable)
         table.clear()
         for dir, ag in self.agents.items():
+            level = ag.consciousness_monitor.last_consciousness_level.value if hasattr(ag, 'consciousness_monitor') else "N/A"
+            score = ag.consciousness_metrics.get_overall_score() if hasattr(ag, 'consciousness_metrics') else 0.0
             log_action = f"Show Logs ({len(ag.logs)})" if not self.show_logs[dir] else f"Hide Logs ({len(ag.logs)})"
-            table.add_row(dir, ag.status, log_action, key=dir)
+            table.add_row(dir, ag.status, level, f"{score:.3f}", log_action, key=dir)
 
         logs_container = self.query_one("#logs_container", Vertical)
         logs_container.remove_children()
