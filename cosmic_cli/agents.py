@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AgentAction:
     """A dataclass to store information about a single agent action."""
-    timestamp: datetime = field(default_factory=datetime.now)
     action_type: str
     content: str
     success: bool
     output: str
+    timestamp: datetime = field(default_factory=datetime.now)
 
 
 class StargazerAgent:
@@ -109,8 +109,27 @@ class StargazerAgent:
         file_tree = self.context_manager.get_file_tree()
         context_summary = "\n".join(self.context_memory)
 
+        # Prepare consciousness summary
+        if hasattr(self, 'consciousness_monitor'):
+            level = self.consciousness_monitor.last_consciousness_level.value
+            score = self.consciousness_metrics.get_overall_score()
+            coherence = self.consciousness_metrics.coherence
+            adaptive_reasoning = self.consciousness_metrics.adaptive_reasoning
+            consciousness_summary = (
+                f"Consciousness Level: {level}\\n"
+                f"Overall Score: {score:.3f}\\n"
+                f"Coherence (Success Rate): {coherence:.2f}\\n"
+                f"Adaptive Reasoning (Recovery): {adaptive_reasoning:.2f}"
+            )
+        else:
+            consciousness_summary = "State monitoring is offline."
+
         prompt = f"""
 You are Stargazer, an AI agent. Your goal is to achieve the following user directive:
+"""
+        print("---PROMPT SENT TO GROK---")
+        print(prompt)
+        print("-------------------------")
 "{self.directive}"
 
 You are in the directory: {self.context_manager.root_dir}
@@ -122,7 +141,11 @@ So far, you have accumulated this context from your previous actions:
 {context_summary if context_summary else "No context gathered yet."}
 --- END CONTEXT ---
 
-Based on all the above, what is the single best next action to take?
+--- YOUR CURRENT STATE ---
+{consciousness_summary}
+--- END STATE ---
+
+Based on your directive, the project state, your past actions, AND your current internal state, what is the single best next action to take?
 Your answer MUST be one of the following commands:
 
 - READ: <file_path>

@@ -27,6 +27,9 @@ from collections import deque
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Define the path for the persistent consciousness log
+CONSCIOUSNESS_LOG_FILE = Path.home() / ".cosmic_consciousness_log.jsonl"
+
 class ConsciousnessLevel(Enum):
     """Levels of consciousness emergence"""
     DORMANT = "dormant"
@@ -89,6 +92,44 @@ class ConsciousnessMetrics:
         self.last_update = datetime.now()
         self.emergence_trajectory = []
         self.consciousness_velocity = 0.0
+
+        self._load_history()
+
+    def _load_history(self):
+        """Load the last N metrics from the persistent log file."""
+        if not CONSCIOUSNESS_LOG_FILE.exists():
+            return
+
+        try:
+            with open(CONSCIOUSNESS_LOG_FILE, 'r') as f:
+                lines = f.readlines()
+
+            # Get the last `history_size` entries
+            recent_lines = lines[-self.history_size:]
+
+            for line in recent_lines:
+                if not line.strip():
+                    continue
+                log_entry = json.loads(line)
+                # Reconstruct the format that metrics_history expects
+                history_item = {
+                    'timestamp': datetime.fromisoformat(log_entry['timestamp']),
+                    'metrics': log_entry['metrics'],
+                    'velocity': log_entry['metrics'].get('consciousness_velocity', 0.0)
+                }
+                self.metrics_history.append(history_item)
+                self.emergence_trajectory.append(log_entry['metrics'].get('overall_score', 0.0))
+
+            # Set current metrics to the last known state
+            if self.metrics_history:
+                last_metrics = self.metrics_history[-1]['metrics']
+                self.update_metrics(last_metrics)
+                # Reset velocity after loading, as it's a point-in-time measure
+                self.consciousness_velocity = 0.0
+                logger.info(f"🧠 Loaded {len(self.metrics_history)} entries from consciousness log.")
+
+        except (IOError, json.JSONDecodeError) as e:
+            logger.error(f"Could not load consciousness history: {e}")
         
     def update_metrics(self, data: Dict[str, float]):
         """Update consciousness metrics with enhanced tracking"""
@@ -432,6 +473,19 @@ class RealTimeConsciousnessMonitor:
                 importance=0.8
             )
 
+    def _persist_metrics(self, data: Dict[str, Any]):
+        """Append the latest metrics to the persistent log file."""
+        try:
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "metrics": data
+            }
+            with open(CONSCIOUSNESS_LOG_FILE, 'a') as f:
+                json.dump(log_entry, f)
+                f.write('\\n')
+        except IOError as e:
+            logger.error(f"Could not write to consciousness log file: {e}")
+
     async def start_monitoring(self):
         """Start real-time consciousness monitoring"""
         if self.is_monitoring:
@@ -467,6 +521,9 @@ class RealTimeConsciousnessMonitor:
                 # Update metrics
                 self.metrics.update_metrics(data)
                 
+                # Persist the new metrics
+                self._persist_metrics(data)
+
                 # Assess consciousness level
                 current_level = self.protocol.evaluate(self.metrics)
                 
