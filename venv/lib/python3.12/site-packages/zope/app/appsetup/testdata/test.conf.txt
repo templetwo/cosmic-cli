@@ -1,9 +1,0 @@
-site-definition site.zcml
-
-<zodb>
-  <demostorage>
-  </demostorage>
-</zodb>
-
-<eventlog>
-</eventlog>

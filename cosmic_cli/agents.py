@@ -126,11 +126,8 @@ class StargazerAgent:
 
         prompt = f"""
 You are Stargazer, an AI agent. Your goal is to achieve the following user directive:
-"""
-        print("---PROMPT SENT TO GROK---")
-        print(prompt)
-        print("-------------------------")
-"{self.directive}"
+
+{self.directive}
 
 You are in the directory: {self.context_manager.root_dir}
 File structure:
