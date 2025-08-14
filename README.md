@@ -41,7 +41,7 @@ Cosmic CLI transcends traditional command-line tools. It's a true AI agent that 
 
 ```bash
 # Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/templetwo/cosmic-cli
 cd cosmic-cli
 
 # Create and activate virtual environment
