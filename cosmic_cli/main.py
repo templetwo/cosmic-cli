@@ -13,6 +13,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from cosmic_cli.ui import DirectivesUI
 from cosmic_cli.agents import StargazerAgent
+from cosmic_cli.ollama_agent import OllamaStargazerAgent
 import time
 from rich.progress import Progress
 from click.core import Command, Group
@@ -383,6 +384,42 @@ def deploy(directive):
     )
     result = agent.execute()
     console.print(f"[green]Stargazer deployed for '{directive}'—engaging warp drive![/green]")
+
+# Add Ollama stargazer command
+@stargazer.command()
+@click.argument('directive')
+@click.option('--ollama-url', default='http://100.72.59.69:11434', help='Ollama server URL')
+@click.option('--model', default='qwen3:14b', help='Ollama model to use')
+@click.option('--consciousness/--no-consciousness', default=True, help='Enable consciousness monitoring')
+def ollama(directive, ollama_url, model, consciousness):
+    """Deploy with Ollama-powered consciousness-aware agent"""
+    def on_update(msg):
+        console.print(f"[cyan]{msg}[/cyan]")
+
+    console.print(f"[bold magenta]🌌 Deploying OllamaStargazer[/bold magenta]")
+    console.print(f"[dim]Model: {model} @ {ollama_url}[/dim]")
+    console.print(f"[dim]Consciousness monitoring: {'enabled' if consciousness else 'disabled'}[/dim]\n")
+
+    agent = OllamaStargazerAgent(
+        directive=directive,
+        ollama_url=ollama_url,
+        model=model,
+        ui_callback=on_update,
+        work_dir=os.getcwd(),
+        enable_consciousness=consciousness
+    )
+
+    result = agent.execute()
+
+    if consciousness:
+        report = agent.get_consciousness_report()
+        console.print(f"\n[bold cyan]🧠 Consciousness Report:[/bold cyan]")
+        console.print(f"  Level: [bold]{report['level']}[/bold]")
+        console.print(f"  Score: {report['score']:.3f}")
+        if report.get('patterns'):
+            console.print(f"  Patterns detected: {len(report['patterns'])}")
+
+    console.print(f"\n[green]{'✅' if result else '⚠️'} OllamaStargazer mission {'accomplished' if result else 'incomplete'}![/green]")
 
 # Add to main CLI
 cli.add_command(stargazer)
