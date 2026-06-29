@@ -46,6 +46,25 @@ load_manual_env()
 
 console = Console()
 
+def get_api_key() -> Optional[str]:
+    """Prompt for XAI API key using click (hidden input) if not in env.
+    Sets os.environ for downstream use. Returns key or None.
+    Used by both CLI workflows and TUI.
+    """
+    api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+    if not api_key:
+        api_key = click.prompt(
+            "[bold yellow]Enter your xAI API key[/bold yellow]",
+            type=str,
+            hide_input=True,
+        )
+        if api_key:
+            os.environ["XAI_API_KEY"] = api_key
+        else:
+            console.print("[bold red]Error: API key is required.[/bold red]")
+            return None
+    return api_key
+
 COSMIC_QUOTES = [
     "From the edge of the universe:",
     "The stars whisper from the void:",
@@ -102,14 +121,9 @@ class CosmicCLI:
 
     def initialize_chat(self, load_history: bool = True) -> Optional[Any]:
         """Initialize the xAI chat instance."""
-        api_key = os.environ.get("XAI_API_KEY") or os.environ.get("GROK_API_KEY")
+        api_key = get_api_key()
         if not api_key:
-            api_key = click.prompt("[bold yellow]Enter your xAI API key[/bold yellow]", type=str, hide_input=True)
-            if api_key:
-                os.environ["XAI_API_KEY"] = api_key
-            else:
-                self.console.print("[bold red]Error: API key is required.[/bold red]")
-                return None
+            return None
         
         self.client_instance = Client(api_key=api_key)
         self.chat_instance = self.client_instance.chat.create(model="grok-4")
@@ -346,9 +360,8 @@ def workflow(tasks):
     def on_update(msg):
         console.print(f"[cyan]{msg}[/cyan]")
 
-    api_key = os.getenv("XAI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        console.print("[red]XAI_API_KEY not set.[/red]")
         return
 
     agent = StargazerAgent(
@@ -371,9 +384,8 @@ def deploy(directive):
     def on_update(msg):
         console.print(f"[cyan]{msg}[/cyan]")
 
-    api_key = os.getenv("XAI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        console.print("[red]XAI_API_KEY not set.[/red]")
         return
 
     agent = StargazerAgent(
