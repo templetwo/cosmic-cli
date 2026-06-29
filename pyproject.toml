@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cosmic-cli"
+version = "0.2.0"
+description = "Cosmic CLI: Grok-powered terminal agent with context awareness (modernized 2026)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  {name = "Anthony Vasquez Sr.", email = "anthony@templetwo.com"}
+]
+license = {text = "MIT"}
+dependencies = [
+  "click>=8.1",
+  "python-dotenv>=1.0",
+  "xai-sdk>=1.0",
+  "rich>=13.0",
+  "pyfiglet>=1.0",
+  "textual>=0.40",
+  "numpy>=1.26",
+]
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-asyncio",
+  "pytest-cov",
+]
+[project.scripts]
+cosmic-cli = "cosmic_cli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-q --strict-markers"
+markers = [
+  "unit: unit tests",
+  "integration: integration tests",
+]

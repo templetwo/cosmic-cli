@@ -6,8 +6,7 @@ import logging
 from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
 
-from xai_sdk import Client
-from xai_sdk.chat import user, system, assistant
+import openai
 
 from cosmic_cli.context import ContextManager
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
@@ -20,8 +19,6 @@ class StargazerAgent:
     An advanced agent that utilizes xAI Grok to dynamically reason and execute steps
     to achieve high-level directives with intelligent instructor profiles.
     Now includes adaptive learning, dynamic planning, and enriched context understanding.
-
-    Modernized 2026: uses official xai_sdk (no legacy openai client).
     """
 
     def __init__(
@@ -33,7 +30,7 @@ class StargazerAgent:
         work_dir: str = '.',
     ):
         self.directive = directive
-        self.client = Client(api_key=api_key)  # xai_sdk official client
+        self.client = openai.OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
         self.ui_callback = ui_callback or (lambda _: None)
         self.exec_mode = exec_mode
         self.context_manager = ContextManager(root_dir=work_dir)
@@ -124,13 +121,13 @@ Your answer MUST be one of the following commands:
 
 Choose the most logical next step.
 """
-        chat = self.client.chat.create(
+        resp = self.client.chat.completions.create(
             model="grok-4",
-            messages=[user(prompt)],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
+            max_tokens=1024,
         )
-        response = chat.sample()
-        return response.content.strip() if hasattr(response, 'content') else str(response).strip()
+        return resp.choices[0].message.content.strip()
 
     def _execute_step(self, step: str) -> str:
         """Executes a single step and returns the output."""
@@ -168,13 +165,12 @@ Choose the most logical next step.
 
     def _ask_grok_for_info(self, question: str) -> str:
         """A separate, simpler Grok call for INFO questions."""
-        chat = self.client.chat.create(
+        resp = self.client.chat.completions.create(
             model="grok-4",
-            messages=[user(question)],
+            messages=[{"role": "user", "content": question}],
             temperature=0.2,
         )
-        response = chat.sample()
-        return response.content.strip() if hasattr(response, 'content') else str(response).strip()
+        return resp.choices[0].message.content.strip()
 
     def _recover_from_failure(self, step: str):
         """Attempt recovery from a failed step."""

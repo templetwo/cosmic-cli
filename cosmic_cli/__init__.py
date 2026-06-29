@@ -8,7 +8,7 @@ A sophisticated terminal interface that combines AI agents with consciousness mo
 
 # Core components (safe to import, no external API dependencies)
 from .context import ContextManager
-from .agents import StargazerAgent, AgentAction
+from .agents import StargazerAgent  # AgentAction removed in modernization (not defined in agents.py)
 
 # Consciousness system
 from .consciousness_assessment import (
