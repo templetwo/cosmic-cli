@@ -32,6 +32,7 @@ cosmic-cli = "cosmic_cli.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
+exclude = ["_archive*", "tests*", "tests.*", "examples*", "docs*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
