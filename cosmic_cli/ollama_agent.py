@@ -39,7 +39,7 @@ class OllamaStargazerAgent:
     def __init__(
         self,
         directive: str,
-        ollama_url: str = "http://100.72.59.69:11434",
+        ollama_url: str = "http://localhost:11434",  # 2026 modern default: localhost (was remote IP); override for non-local Ollama
         model: str = "qwen3:14b",
         ui_callback: Optional[Callable[[str], None]] = None,
         exec_mode: str = "safe",

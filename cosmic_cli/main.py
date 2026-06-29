@@ -388,7 +388,7 @@ def deploy(directive):
 # Add Ollama stargazer command
 @stargazer.command()
 @click.argument('directive')
-@click.option('--ollama-url', default='http://100.72.59.69:11434', help='Ollama server URL')
+@click.option('--ollama-url', default='http://localhost:11434', help='Ollama server URL (2026 default: localhost; was 100.72.59.69)')
 @click.option('--model', default='qwen3:14b', help='Ollama model to use')
 @click.option('--consciousness/--no-consciousness', default=True, help='Enable consciousness monitoring')
 def ollama(directive, ollama_url, model, consciousness):
@@ -423,6 +423,15 @@ def ollama(directive, ollama_url, model, consciousness):
 
 # Add to main CLI
 cli.add_command(stargazer)
+
+
+@cli.command()
+def tui():
+    """Launch the modern Textual TUI (DirectivesUI for directives/agents)."""
+    # 2026: dedicated tui subcommand
+    console.print("[bold cyan]🚀 Launching Cosmic TUI...[/bold cyan]")
+    DirectivesUI().run()
+
 
 def main():
     DirectivesUI().run()

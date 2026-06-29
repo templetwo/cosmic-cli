@@ -37,7 +37,7 @@ exclude = ["_archive*", "tests*", "tests.*", "examples*", "docs*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
-addopts = "-q --strict-markers"
+addopts = "-q --strict-markers --ignore=_archive --ignore=examples --ignore=docs --ignore-glob=demo*.py"
 markers = [
   "unit: unit tests",
   "integration: integration tests",

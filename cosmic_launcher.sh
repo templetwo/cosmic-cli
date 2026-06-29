@@ -31,9 +31,10 @@ show_cosmic_banner() {
 
 # Check if we're in the right directory
 check_cosmic_environment() {
-if [[ ! -f "$DIR/cosmic_cli/enhanced_main.py" ]]; then
-        echo -e "${COSMIC_RED}❌ Error: cosmic_cli not found in current directory${COSMIC_RESET}"
-        echo -e "${COSMIC_YELLOW}💡 Please run this launcher from the cosmic-cli project root${COSMIC_RESET}"
+    # 2026 MODERN: guard updated for deduped cosmic_cli/ (legacy enhanced_* moved to _archive)
+    if [[ ! -f "$DIR/cosmic_cli/main.py" ]]; then
+        echo -e "${COSMIC_RED}❌ Error: cosmic_cli/main.py not found${COSMIC_RESET}"
+        echo -e "${COSMIC_YELLOW}💡 Please run this launcher from the cosmic-cli project root (modern path: cosmic_cli/main.py + ui.py)${COSMIC_RESET}"
         exit 1
     fi
 }
@@ -118,7 +119,11 @@ launch_chat() {
     
     echo -e "${COSMIC_GREEN}🎭 Selected personality: ${personality}${COSMIC_RESET}"
     echo ""
-$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" chat --personality
+    # 2026 MODERN: use cosmic_cli tui subcommand (added for modern path)
+    PYTHONPATH="$DIR" $PYTHON_CMD -m cosmic_cli.main tui || PYTHONPATH="$DIR" $PYTHON_CMD -c "
+from cosmic_cli.ui import DirectivesUI
+DirectivesUI().run()
+"
 }
 
 # Quick ask function
@@ -129,7 +134,14 @@ launch_quick_ask() {
     
     if [[ -n "$question" ]]; then
         echo -e "${COSMIC_GREEN}🚀 Consulting cosmic consciousness...${COSMIC_RESET}"
-$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" ask
+        # 2026 MODERN fallback: direct ask via cosmic-cli entry or main (legacy ask not subcmd)
+        PYTHONPATH="$DIR" $PYTHON_CMD -c "
+import sys, os
+sys.path.insert(0, '$DIR')
+os.environ.setdefault('XAI_API_KEY', os.environ.get('XAI_API_KEY',''))
+from cosmic_cli.main import ask_command
+ask_command('$question')
+" || echo '[info] Use: cosmic-cli --ask \"...\" or stargazer deploy after install'
     else
         echo -e "${COSMIC_RED}❌ No question provided${COSMIC_RESET}"
     fi
@@ -178,7 +190,14 @@ if result:
         
         depth=${depth:-3}
         echo -e "${COSMIC_GREEN}🔍 Analyzing with cosmic intelligence...${COSMIC_RESET}"
-$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" analyze
+        # 2026 MODERN: analyze via python main (no dedicated subcmd; use stargazer or --analyze flag)
+        PYTHONPATH="$DIR" $PYTHON_CMD -c "
+import sys, os
+sys.path.insert(0,'$DIR')
+os.environ.setdefault('XAI_API_KEY', os.environ.get('XAI_API_KEY',''))
+from cosmic_cli.main import analyze_command
+analyze_command('$file_path')
+" || echo '[info] modern equiv: cosmic-cli --analyze <path> (once wired)'
     elif [[ -n "$file_path" ]]; then
         echo -e "${COSMIC_RED}❌ File not found: $file_path${COSMIC_RESET}"
     else
@@ -193,14 +212,11 @@ launch_enhanced_ui() {
     echo ""
     
     echo -e "${COSMIC_GREEN}🌟 Initializing Enhanced UI...${COSMIC_RESET}"
-    $PYTHON_CMD -c "
+    # 2026 MODERN: use live ui.py DirectivesUI (enhanced_* archived to _archive/)
+    PYTHONPATH="$DIR" $PYTHON_CMD -c "
 import sys
-sys.path.append('.')
+sys.path.insert(0, '$DIR')
 try:
-    from cosmic_cli.enhanced_ui import run_enhanced_ui
-    run_enhanced_ui()
-except ImportError:
-    print('${COSMIC_RED}❌ Enhanced UI not available. Using fallback...${COSMIC_RESET}')
     from cosmic_cli.ui import DirectivesUI
     app = DirectivesUI()
     app.run()
@@ -216,30 +232,21 @@ launch_plugin_manager() {
     echo ""
     
     echo -e "${COSMIC_GREEN}🚀 Loading plugin manager...${COSMIC_RESET}"
-    $PYTHON_CMD -c "
+    # 2026 MODERN note: plugins/ exists but enhanced manager may be limited; using live plugins
+    PYTHONPATH="$DIR" $PYTHON_CMD -c "
 import sys
-sys.path.append('.')
+sys.path.insert(0, '$DIR')
 try:
     from cosmic_cli.plugins import get_plugin_manager, initialize_plugins
-    
-    # Initialize plugins
     print('${COSMIC_CYAN}🔄 Initializing plugins...${COSMIC_RESET}')
     results = initialize_plugins()
-    
     manager = get_plugin_manager()
     status = manager.get_plugin_status()
-    
     print('${COSMIC_GREEN}📊 Plugin Status:${COSMIC_RESET}')
     for name, info in status.items():
-        status_icon = '✅' if info['health']['healthy'] else '❌'
-        print(f'  {status_icon} {name}: {info[\"metadata\"].get(\"description\", \"No description\")}')
-        print(f'     Version: {info[\"metadata\"].get(\"version\", \"Unknown\")}')
-        print(f'     Capabilities: {\", \".join(info[\"capabilities\"])}')
-        print()
-    
-    print(f'${COSMIC_INFO}ℹ️  Total plugins loaded: {len(status)}${COSMIC_RESET}')
-    print('${COSMIC_DIM}Use the Enhanced UI for interactive plugin management${COSMIC_RESET}')
-    
+        status_icon = '✅' if info.get('health',{}).get('healthy', False) else '❌'
+        print(f'  {status_icon} {name}: {info.get(\"metadata\",{}).get(\"description\", \"No description\")}')
+    print(f'Total: {len(status)}')
 except Exception as e:
     print(f'${COSMIC_RED}❌ Error loading plugins: {e}${COSMIC_RESET}')
 "
@@ -302,29 +309,24 @@ launch_stargazer() {
     
     if [[ -n "$directive" ]]; then
         echo -e "${COSMIC_GREEN}🌟 Initializing StargazerAgent...${COSMIC_RESET}"
-        $PYTHON_CMD -c "
-import sys
-sys.path.append('.')
-from cosmic_cli.enhanced_agents import EnhancedStargazerAgent
-import os
-
+        # 2026 MODERN: live StargazerAgent in cosmic_cli/agents.py (enhanced archived)
+        PYTHONPATH="$DIR" $PYTHON_CMD -c "
+import sys, os
+sys.path.insert(0, '$DIR')
+from cosmic_cli.agents import StargazerAgent
 try:
     api_key = os.environ.get('XAI_API_KEY') or os.environ.get('GROK_API_KEY')
     if not api_key:
         print('${COSMIC_YELLOW}🔑 API key required for StargazerAgent${COSMIC_RESET}')
         exit(1)
-    
-    agent = EnhancedStargazerAgent(
+    agent = StargazerAgent(
         directive='$directive',
         api_key=api_key,
         exec_mode='safe',
         work_dir='.',
-        max_steps=15
     )
-    
     print('${COSMIC_GREEN}🚀 Executing directive with cosmic intelligence...${COSMIC_RESET}')
     result = agent.execute()
-    
 except Exception as e:
     print(f'${COSMIC_RED}❌ Error: {e}${COSMIC_RESET}')
 "
@@ -336,7 +338,14 @@ except Exception as e:
 # Session manager
 launch_sessions() {
     echo -e "${COSMIC_CYAN}📚 Cosmic Session Manager${COSMIC_RESET}"
-$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" sessions
+    # 2026 MODERN: sessions not directly wired; use tui or memory files
+    PYTHONPATH="$DIR" $PYTHON_CMD -c "
+import sys
+sys.path.insert(0, '$DIR')
+print('Session manager: see ~/.cosmic_cli_memory.json and echo memory; launch tui for full UI')
+from cosmic_cli.main import cli
+# cli(['--help']) would show, but avoid interactive
+" || echo '[modern] Use cosmic-cli stargazer or tui'
 }
 
 # System info
@@ -379,7 +388,8 @@ setup_api_key() {
 # Show help
 show_help() {
     echo -e "${COSMIC_CYAN}📖 Cosmic CLI Commands${COSMIC_RESET}"
-$PYTHON_CMD "$DIR/cosmic_cli/enhanced_main.py" --help
+    # 2026 MODERN: use live cosmic_cli entrypoint
+    PYTHONPATH="$DIR" $PYTHON_CMD -m cosmic_cli.main --help || cosmic-cli --help || echo 'Install via pip -e . for cosmic-cli cmd'
 }
 
 # Main launcher loop

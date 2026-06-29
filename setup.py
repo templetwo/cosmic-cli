@@ -1,4 +1,5 @@
 
+# DEPRECATED (2026): Use pyproject.toml for build (PEP 621). This file kept for legacy compat only.
 from setuptools import setup, find_packages
 
 setup(
