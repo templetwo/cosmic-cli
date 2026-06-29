@@ -233,13 +233,14 @@ Choose the most logical next step.
         if 'results' in final_result and final_result['results']:
             last_result = final_result['results'][-1].get('result', 'No final answer')
             prompt = f"Suggest a tone (e.g., Resplendent Reflection) and a glyph (e.g., 🌀) for this outcome: {last_result} in JSON format: {{'tone': '', 'glyph': ''}}"
-            resp = self.client.chat.completions.create(
+            chat = self.client.chat.create(
                 model="grok-4",
-                messages=[{"role": "user", "content": prompt}],
+                messages=[user(prompt)],
                 temperature=0.7,
-                response_format={"type": "json_object"},
             )
-            suggestion = json.loads(resp.choices[0].message.content)
+            response = chat.sample()
+            content = response.content if hasattr(response, 'content') else str(response)
+            suggestion = json.loads(content)
             tone = suggestion.get('tone', 'Unknown')
             glyph = suggestion.get('glyph', '?')
             entry = {

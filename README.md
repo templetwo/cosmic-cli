@@ -2,7 +2,9 @@
 
 > **An intelligent, agentic CLI powered by Grok that understands your codebase, reasons about your directives, and executes multi-step plans.**
 
-Cosmic CLI transcends traditional command-line tools. It's a true AI agent that lives in your terminal. Powered by xAI's Grok-4, it features a sophisticated, step-by-step execution loop, allowing it to reason, self-correct, and tackle complex tasks with a deep understanding of your project's context.
+**2026 update**: Modern packaging via pyproject.toml, native xai-sdk (no legacy openai), deduplicated (old variants in _archive/), clean StargazerAgent in agents.py. Primary agent entry: `cosmic-cli stargazer deploy`.
+
+Cosmic CLI transcends traditional command-line tools. It's a true AI agent that lives in your terminal. Powered by xAI's Grok-4, it features a sophisticated, step-by-step execution loop (READ/SHELL/CODE/INFO/FINISH), allowing it to reason, self-correct, and tackle complex tasks with a deep understanding of your project's context.
 
 ## ✨ Core Features
 
@@ -82,52 +84,33 @@ cosmic-cli stargazer deploy 'Create a new file called "hello.txt" with the conte
 ```
 > The agent will chain a `CODE:` or `SHELL:` command to create the file, followed by a `SHELL:` command to verify it.
 
-### Example 4: Consciousness Monitoring
+### Example 4: Stargazer Agent (Primary 2026 Path)
 ```python
-from cosmic_cli.enhanced_agents import EnhancedStargazerAgent
-from cosmic_cli.consciousness_assessment import integrate_consciousness_monitoring
+from cosmic_cli.agents import StargazerAgent
+import os
 
-# Create consciousness-aware agent
-agent = EnhancedStargazerAgent(
-    directive="Analyze my consciousness patterns while solving problems",
+# Deploy Stargazer (uses xai_sdk, context, step loop: READ/SHELL/CODE/INFO/FINISH)
+api_key = os.getenv("XAI_API_KEY")
+agent = StargazerAgent(
+    directive="Read cosmic_cli/main.py and summarize the stargazer deploy command.",
     api_key=api_key,
-    enable_learning=True
+    work_dir="."
 )
-
-# Integrate consciousness monitoring
-monitor = integrate_consciousness_monitoring(agent)
-
-# Execute with real-time consciousness tracking
 result = agent.execute()
-
-# Check consciousness evolution
-report = monitor.get_consciousness_report()
-print(f"Final consciousness level: {report['current_level']}")
+print("Stargazer result:", result)
 ```
 
-### Example 5: Consciousness Assessment
+Note: consciousness system remains available via separate modules for research use.
+
+### Example 5: Consciousness Research Modules (optional)
 ```python
 from cosmic_cli.consciousness_assessment import (
-    ConsciousnessMetrics, AssessmentProtocol, create_consciousness_report
+    ConsciousnessMetrics, ConsciousnessLevel
 )
 
-# Manual consciousness assessment
+# Consciousness research modules still importable (separate from core agent)
 metrics = ConsciousnessMetrics()
-protocol = AssessmentProtocol()
-
-# Update with consciousness data
-consciousness_data = {
-    'coherence': 0.75,
-    'self_reflection': 0.68,
-    'contextual_understanding': 0.82,
-    'meta_cognitive_awareness': 0.65,
-    'creative_synthesis': 0.77
-}
-
-metrics.update_metrics(consciousness_data)
-level = protocol.evaluate(metrics)
-print(f"Consciousness Level: {level.value}")
-print(f"Overall Score: {metrics.get_overall_score():.3f}")
+print("Consciousness research modules available for studies.")
 ```
 
 ## 🧠 Consciousness Research & Documentation
@@ -157,15 +140,20 @@ Based on seven major consciousness theories:
 - **Consciousness-aware personalities** that evolve based on awareness levels
 - **Advanced analytics** including trend analysis and trajectory prediction
 
-## 🏗️ Development & Architecture
+## 🏗️ Development & Architecture (2026 Modernized)
 
-The `cosmic-cli` is built on a modular, agentic architecture.
+The `cosmic-cli` is built on a modular, agentic architecture. Duplicates archived to `_archive/`.
 
--   `cosmic_cli/main.py`: The **CLI entry point** using `click`. It handles command parsing and launches the agent or UI.
--   `cosmic_cli/ui.py`: The **Textual TUI application**. It provides the user interface but is decoupled from the agent's core logic.
--   `cosmic_cli/agents.py`: The **heart of the CLI**. Contains the `StargazerAgent` with its intelligent, step-by-step execution loop and context memory.
--   `cosmic_cli/consciousness_assessment.py`: The **consciousness engine**. Implements research-based consciousness detection and monitoring.
--   `cosmic_cli/context.py`: The **context engine**. The `ContextManager` is responsible for scanning the file system and providing context to the agent.
+-   `pyproject.toml`: Modern packaging (0.2.0), xai-sdk, click entry `cosmic-cli = "cosmic_cli.main:cli"`.
+-   `cosmic_cli/main.py`: The **CLI entry point** using `click`. Handles commands + `stargazer deploy <directive>`.
+-   `cosmic_cli/ui.py`: The **Textual TUI application**.
+-   `cosmic_cli/agents.py`: The **core agent**. `StargazerAgent` (xai_sdk native, READ/SHELL/CODE/INFO/FINISH loop, context).
+-   `cosmic_cli/consciousness_assessment.py`: Consciousness research modules (optional).
+-   `cosmic_cli/context.py`: ContextManager for file tree + reads.
+
+Primary functional path for agent work: `cosmic-cli stargazer deploy 'directive'`
+
+See `stargazer ollama` for local models (note: ollama URL configurable).
 
 ## 🧪 Testing
 

@@ -16,8 +16,8 @@ def test_core_imports():
         return False
         
     try:
-        from cosmic_cli import ContextManager, StargazerAgent, AgentAction
-        print("✅ Core classes: ContextManager, StargazerAgent, AgentAction")
+        from cosmic_cli import ContextManager, StargazerAgent
+        print("✅ Core classes: ContextManager, StargazerAgent")
     except Exception as e:
         print(f"❌ Core classes: {e}")
         return False
@@ -65,7 +65,7 @@ def test_submodule_imports():
     
     try:
         from cosmic_cli.context import ContextManager
-        from cosmic_cli.agents import StargazerAgent, AgentAction  
+        from cosmic_cli.agents import StargazerAgent
         from cosmic_cli.consciousness_assessment import ConsciousnessLevel
         from cosmic_cli.plugins.base import BasePlugin, PluginMetadata
         print("✅ Direct submodule imports work")
