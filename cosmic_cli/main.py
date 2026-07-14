@@ -23,6 +23,11 @@ from xai_sdk.chat import assistant, system, user
 from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
 from cosmic_cli.ollama_agent import OllamaStargazerAgent
 from cosmic_cli.principles import DIFFERENTIATORS
+from cosmic_cli.review import (
+    build_bundle,
+    latest_session_id,
+    run_review,
+)
 from cosmic_cli.ui import DirectivesUI
 
 # Quiet noisy library logs by default; --verbose re-enables agent INFO.
@@ -264,6 +269,28 @@ def _run_stargazer(
     return result
 
 
+def _print_review(report: Dict[str, Any]) -> None:
+    verdict = str(report.get("verdict", "?")).upper()
+    color = {"CLEAR": "green", "WARN": "yellow", "BLOCK": "red"}.get(verdict, "white")
+    console.print(f"[{color}]review verdict: {verdict}[/{color}]")
+    for f in report.get("findings") or []:
+        sev = str(f.get("severity", "NOTE")).upper()
+        sc = {"FATAL": "red", "WARN": "yellow", "NOTE": "dim"}.get(sev, "white")
+        path = f.get("path") or ""
+        title = f.get("title") or ""
+        detail = f.get("detail") or ""
+        console.print(f"  [{sc}]{sev}[/{sc}] {path} — {title}")
+        if detail:
+            console.print(f"         {detail[:400]}")
+    if report.get("residual_risk"):
+        console.print(f"[dim]residual:[/dim] {report['residual_risk']}")
+    tests = report.get("suggested_tests") or []
+    if tests:
+        console.print("[dim]suggested tests:[/dim]")
+        for t in tests:
+            console.print(f"  · {t}")
+
+
 @cli.command("do")
 @click.argument("directive")
 @click.option(
@@ -279,8 +306,19 @@ def _run_stargazer(
     default=True,
     help="Auto py_compile on edited Python before FINISH",
 )
+@click.option(
+    "--review/--no-review",
+    default=False,
+    help="Run independent review seat on edited files after mission",
+)
 def do_cmd(
-    directive: str, mode: str, max_steps: int, model: str, quiet: bool, verify: bool
+    directive: str,
+    mode: str,
+    max_steps: int,
+    model: str,
+    quiet: bool,
+    verify: bool,
+    review: bool,
 ) -> None:
     """Run Stargazer on a directive (primary daily command)."""
     result = _run_stargazer(
@@ -291,8 +329,86 @@ def do_cmd(
         quiet=quiet,
         auto_verify=verify,
     )
+    if review and result.get("edited"):
+        api_key = get_api_key(prompt=False)
+        if api_key:
+            console.print("\n[bold]second seat · review[/bold]")
+            bundle = build_bundle(
+                Path.cwd(),
+                session_id=result.get("session"),
+                paths=list(result.get("edited") or []),
+                directive=directive,
+            )
+            report = run_review(bundle, api_key=api_key, model=model)
+            _print_review(report)
+            if str(report.get("verdict", "")).upper() == "BLOCK":
+                sys.exit(3)
     if result.get("status") != "complete":
         sys.exit(1)
+
+
+@cli.command("review")
+@click.option(
+    "--session",
+    default=None,
+    help="Session id (default: latest under ~/.cosmic-cli/sessions)",
+)
+@click.option(
+    "--path",
+    "paths",
+    multiple=True,
+    help="Explicit path(s) to review (repeatable). Overrides session edited list if set.",
+)
+@click.option("--model", default=DEFAULT_MODEL, show_default=True)
+@click.option(
+    "--directive",
+    default="",
+    help="Optional mission directive context for the reviewer",
+)
+def review_cmd(
+    session: Optional[str], paths: tuple, model: str, directive: str
+) -> None:
+    """Independent second-pass review of diffs (Cold Eye seat)."""
+    api_key = get_api_key()
+    if not api_key:
+        sys.exit(2)
+    sid = session or latest_session_id()
+    path_list = list(paths) if paths else None
+    if not sid and not path_list:
+        console.print(
+            "[red]No session found and no --path given. Run a mission first.[/red]"
+        )
+        sys.exit(2)
+    console.print(
+        f"[dim]review · model={model} · session={sid or '—'} · "
+        f"paths={', '.join(path_list or []) or '(from session)'}[/dim]"
+    )
+    bundle = build_bundle(
+        Path.cwd(),
+        session_id=sid,
+        paths=path_list,
+        directive=directive,
+    )
+    if not bundle.paths and not bundle.diffs:
+        console.print("[yellow]Nothing to review (no edited paths / diffs).[/yellow]")
+        sys.exit(0)
+    console.print(f"[dim]reviewing: {', '.join(bundle.paths)}[/dim]")
+    try:
+        report = run_review(bundle, api_key=api_key, model=model)
+    except Exception as e:
+        console.print(f"[red]review failed: {e}[/red]")
+        sys.exit(1)
+    _print_review(report)
+    # persist beside session
+    if sid:
+        out = SESSION_DIR / f"{sid}.review.json"
+        try:
+            out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            console.print(f"[dim]wrote {out}[/dim]")
+        except OSError:
+            pass
+    if str(report.get("verdict", "")).upper() == "BLOCK":
+        sys.exit(3)
 
 
 @cli.command("chat")

@@ -50,6 +50,12 @@ cosmic-cli do 'In scratch/note.txt, change hello to hello world. Create the file
 # Options
 cosmic-cli do --mode safe --max-steps 20 --no-verify -q '…'
 cosmic-cli do --model grok-4.3 '…'
+cosmic-cli do --review '…'   # build, then independent review seat on diffs
+
+# Review only (latest session or explicit paths)
+cosmic-cli review
+cosmic-cli review --session 20260713T235943Z
+cosmic-cli review --path note.py --directive 'change greeting'
 
 cosmic-cli ask '…'      # one-shot, no tools
 cosmic-cli chat
@@ -89,6 +95,6 @@ pytest tests/ -q
 
 ## Version
 
-**0.4.0** — coding-interface loop (search / edit / verify / sessions).
+**0.4.1** — coding-interface loop + independent `review` seat (no stack bridge yet).
 
 MIT · Temple of Two
