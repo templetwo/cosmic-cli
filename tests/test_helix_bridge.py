@@ -30,6 +30,38 @@ def test_call_when_unavailable():
     assert r["ok"] is False
 
 
+def test_witness_sends_structured_bash():
+    """Shell must not go as a plain string (Grok tag skips Bash rules)."""
+    captured = {}
+
+    def fake_call(op, **kwargs):
+        captured["op"] = op
+        captured["kwargs"] = kwargs
+        return {
+            "ok": True,
+            "result": {
+                "classification": "PAUSE",
+                "blocked": True,
+                "pending_token": "deadbeef",
+                "reason": "test",
+            },
+        }
+
+    with patch.object(helix_bridge, "call", side_effect=fake_call):
+        r = helix_bridge.witness(
+            tool_name="Bash",
+            tool_input={"command": "echo sk-test"},
+            session_id="s1",
+        )
+    assert captured["op"] == "witness"
+    action = captured["kwargs"]["action"]
+    assert action["tool_name"] == "Bash"
+    assert action["tool_input"]["command"] == "echo sk-test"
+    d = helix_bridge.parse_witness(r)
+    assert d["classification"] == "PAUSE"
+    assert d["pending_token"] == "deadbeef"
+
+
 def test_parse_witness_pause_and_witness():
     pause = helix_bridge.parse_witness(
         {

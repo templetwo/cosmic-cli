@@ -105,13 +105,24 @@ async function main() {
           intensity: req.intensity || 0.6,
         });
         break;
-      case 'witness':
-        result = await g.grokWitness(req.action || req.query || '', {
+      case 'witness': {
+        // Prefer structured tool actions so compass Bash-scoped rules match.
+        // Plain strings are tagged tool_name:'Grok' and skip 8/9 rules
+        // (Claude PAUSE experiment 2026-07-14).
+        let action = req.action !== undefined ? req.action : req.query || '';
+        if (req.tool_name) {
+          action = {
+            tool_name: req.tool_name,
+            tool_input: req.tool_input || {},
+          };
+        }
+        result = await g.grokWitness(action, {
           session_id: req.session_id,
           domain: req.domain || 'cosmic-cli',
           tags: req.tags || ['source:cosmic-cli'],
         });
         break;
+      }
       case 'confirm_pending': {
         const token = req.token;
         if (!token) {

@@ -32,6 +32,10 @@ Until 2026-07-14, non-hook seats treated **PAUSE as OPEN** in `grok-adapter.js`
 | **PAUSE** | Soft block. Mints single-use token. Approve with `cosmic-cli helix confirm <token>`, then retry. |
 | **OPEN** | Proceed. |
 
+**Wire shape (Claude experiment 2026-07-14):** Cosmic must send shell as  
+`{tool_name: "Bash", tool_input: {command: cmd}}`.  
+Plain `"SHELL: …"` strings are tagged `Grok` in the adapter and **skip every Bash-scoped rule** — enforcement code never fires. Fixed in Cosmic: always Bash-structured.
+
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
 ## Memory

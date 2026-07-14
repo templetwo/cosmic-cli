@@ -141,7 +141,13 @@ def record(
     )
 
 
-def witness(action: str, *, session_id: Optional[str] = None) -> Dict[str, Any]:
+def witness(
+    action: Any = None,
+    *,
+    session_id: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    tool_input: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Run compass classify for an action.
 
     Honest contract (2026-07-14):
@@ -149,8 +155,23 @@ def witness(action: str, *, session_id: Optional[str] = None) -> Dict[str, Any]:
     - PAUSE → blocked until confirm_pending(token), then retry
     - OPEN → allowed
 
-    Classification is on the *inner* result of grokWitness (rpc wraps as result=...).
+    CRITICAL: Shell commands must be sent as structured Bash actions so
+    compass rules with tool:\"Bash\" match. A plain string is tagged tool_name
+    'Grok' and every Bash-scoped rule is skipped (Claude PAUSE experiment).
+
+    Prefer:
+      witness(tool_name=\"Bash\", tool_input={\"command\": cmd})
     """
+    if tool_name is not None:
+        payload: Any = {
+            "tool_name": tool_name,
+            "tool_input": tool_input if tool_input is not None else {},
+        }
+        return call("witness", action=payload, session_id=session_id)
+    if isinstance(action, dict) and action.get("tool_name"):
+        return call("witness", action=action, session_id=session_id)
+    if action is None:
+        return {"ok": False, "error": "witness requires action or tool_name"}
     return call("witness", action=action, session_id=session_id)
 
 
