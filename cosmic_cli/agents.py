@@ -22,6 +22,8 @@ from xai_sdk.chat import user
 
 from cosmic_cli.context import ContextManager
 from cosmic_cli.principles import system_prompt_block
+from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
+from cosmic_cli.shell_guard import check_shell
 from cosmic_cli.tools import (
     looks_like_path_bug,
     parse_edit_payload,
@@ -37,6 +39,11 @@ from cosmic_cli.tools import (
     tool_write,
 )
 
+try:
+    from cosmic_cli import helix_bridge
+except ImportError:  # pragma: no cover
+    helix_bridge = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 ECHO_FILE = Path.home() / ".cosmic_echo.jsonl"
@@ -46,23 +53,6 @@ MAX_STEPS_DEFAULT = 20
 CONTEXT_MEMORY_CAP = 16
 CONTEXT_CHARS_CAP = 28_000
 FILE_TREE_LINES_CAP = 120
-
-DANGEROUS_SHELL = (
-    "rm -rf",
-    "rm -r ",
-    "sudo ",
-    " mkfs",
-    "dd if=",
-    "> /dev",
-    ":(){ :|:& };:",
-    "chmod -R 777 /",
-    "shutdown",
-    "reboot",
-    "diskutil erase",
-    "mkfs.",
-    "git push --force",
-    "git reset --hard",
-)
 
 STEP_PREFIXES = (
     "GLOB:",
@@ -105,10 +95,15 @@ class StargazerAgent:
         show_progress: bool = False,
         session_id: Optional[str] = None,
         auto_verify: bool = True,
+        use_helix: bool = True,
+        helix_context: str = "",
+        api_timeout: float = 120.0,
     ):
         self.directive = directive
-        self.client = Client(api_key=api_key)
+        self.client = Client(api_key=api_key, timeout=api_timeout)
         self.ui_callback = ui_callback or (lambda _: None)
+        self.use_helix = use_helix and helix_bridge is not None
+        self.helix_context = helix_context
         self.exec_mode = exec_mode
         self.root = Path(work_dir).resolve()
         self.context_manager = ContextManager(root_dir=str(self.root))
@@ -192,7 +187,7 @@ class StargazerAgent:
             return
         entry = {
             "directive": self.directive,
-            "outcome": str(outcome)[:2000],
+            "outcome": redact(str(outcome)[:2000]),
             "status": status,
             "model": self.model,
             "steps": self.steps_taken,
@@ -206,6 +201,24 @@ class StargazerAgent:
             self._log(f"echo → {ECHO_FILE}")
         except OSError as e:
             self._log(f"[warn] echo write failed: {e}")
+        # Helix chronicle (local memory substrate)
+        if self.use_helix and helix_bridge is not None:
+            try:
+                content = (
+                    f"COSMIC mission [{status}] session={self.session_id}\n"
+                    f"directive: {self.directive}\n"
+                    f"edited: {', '.join(self.files_edited) or '(none)'}\n"
+                    f"outcome: {redact(str(outcome)[:1500])}"
+                )
+                helix_bridge.record(
+                    content,
+                    session_id=self.session_id,
+                    domain="cosmic-cli",
+                    tags=["source:cosmic-cli", f"status:{status}", f"model:{self.model}"],
+                    intensity=0.7 if status == "complete" else 0.5,
+                )
+            except Exception as e:  # pragma: no cover
+                logger.warning("helix record failed: %s", e)
 
     # ── parsing ───────────────────────────────────────────────────
 
@@ -276,6 +289,11 @@ class StargazerAgent:
         return blob
 
     def _file_tree(self) -> str:
+        # Rescan so CREATE/WRITE land in the tree the model sees next turn
+        try:
+            self.context_manager.refresh()
+        except Exception:
+            pass
         tree = self.context_manager.get_file_tree()
         lines = tree.splitlines()
         if len(lines) > FILE_TREE_LINES_CAP:
@@ -295,11 +313,16 @@ class StargazerAgent:
                 "\nPATH HINT: cwd is HOME. Use Desktop/… not /Users/…/Desktop/… "
                 "For folder+file use CREATE: Desktop/folder/file.md|||…"
             )
+        helix_block = ""
+        if self.helix_context:
+            helix_block = f"\n## T2Helix foundational memory\n{self.helix_context}\n"
         prompt = f"""You are Stargazer, a coding agent operating in a real project directory.
 The filesystem is ground truth. You change it only through tools.
+MEMORY: action queries T2Helix local chronicle (shared with Claude seats).
 
 {system_prompt_block()}
 {home_hint}
+{helix_block}
 
 DIRECTIVE:
 {self.directive}
@@ -319,6 +342,7 @@ CONTEXT / OBSERVATIONS:
 
 Reply with EXACTLY ONE action line (CREATE/WRITE/EDIT may span lines after |||).
 No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
+Do not READ .env, *.pem, id_rsa, or credential files.
 """
         try:
             chat = self.client.chat.create(
@@ -397,18 +421,29 @@ No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
 
         if upper.startswith("READ:"):
             raw = self._body_after(step, "READ:").strip("'\"")
+            if is_sensitive_path(raw) or is_sensitive_path(Path(raw).name):
+                return deny_read_message(raw)
             try:
                 file_path = rel_key(raw, self.root)
             except PermissionError as e:
                 return f"[Error] {e}"
+            if is_sensitive_path(file_path):
+                return deny_read_message(file_path)
             if file_path in self.files_read and file_path not in self.files_edited:
-                self._log(f"READ {file_path} (cache)")
-                return self.files_read[file_path]
+                cached = self.files_read[file_path]
+                if cached.startswith("[Error]") or cached.startswith("[BLOCKED]"):
+                    # don't sticky-cache errors forever — allow retry
+                    self.files_read.pop(file_path, None)
+                else:
+                    self._log(f"READ {file_path} (cache)")
+                    return cached
             self._log(f"READ {file_path}")
             content = self.context_manager.read_file(file_path)
+            if content.startswith("[Error]"):
+                return content  # do not cache errors
+            content = redact(content)
             self.files_read[file_path] = content
-            if not content.startswith("[Error]"):
-                self.files_seen.add(file_path)
+            self.files_seen.add(file_path)
             self._add_to_memory(
                 f"READ {file_path} ({len(content)} chars):\n{content[:8000]}",
                 label=file_path,
@@ -568,11 +603,32 @@ No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
 
         if upper.startswith("MEMORY:"):
             query = self._body_after(step, "MEMORY:")
+            # Prefer T2Helix chronicle; fall back to local echo file
+            if self.use_helix and helix_bridge is not None:
+                hr = helix_bridge.recall(query, top_k=6)
+                if hr.get("ok"):
+                    items = hr.get("result") or []
+                    if isinstance(items, list) and items:
+                        chunks = []
+                        for m in items[:6]:
+                            if isinstance(m, dict):
+                                chunks.append(
+                                    redact(
+                                        (m.get("content") or m.get("text") or str(m))[
+                                            :400
+                                        ]
+                                    )
+                                )
+                            else:
+                                chunks.append(redact(str(m)[:400]))
+                        answer = "Helix recall:\n" + "\n---\n".join(chunks)
+                        self._add_to_memory(f"MEMORY: {answer}", label="memory")
+                        return answer
             memories = self._load_echo_memory()[-20:]
             answer = self._ask_grok_for_info(
                 f"Past echoes:\n{json.dumps(memories, ensure_ascii=False)}\n\nQuery: {query}"
             )
-            self._add_to_memory(f"MEMORY: {answer}", label="memory")
+            self._add_to_memory(f"MEMORY: {redact(answer)}", label="memory")
             return answer
 
         if upper.startswith("PASS:"):
@@ -647,7 +703,13 @@ No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
                 head = next_step.splitlines()[0][:120]
                 self._log(f"→ {i + 1}/{self.max_steps} {head}")
                 upper = next_step.upper()
-                self._session_write({"event": "step", "n": i + 1, "action": next_step[:2000]})
+                self._session_write(
+                {
+                    "event": "step",
+                    "n": i + 1,
+                    "action": redact(next_step[:2000]),
+                }
+            )
 
                 # Discovery thrash counter
                 if any(upper.startswith(p) for p in DISCOVERY_PREFIXES):
@@ -856,18 +918,26 @@ No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
         return f"FINISH: Available context only.\n{mem[:800]}"
 
     def _run_shell(self, cmd: str) -> str:
-        if self.exec_mode == "safe":
-            if any(d in cmd for d in DANGEROUS_SHELL):
-                return "[BLOCKED] dangerous command in safe mode."
-            if re.search(r"\brm\b.*(-[a-zA-Z]*[rf]|--recursive)", cmd):
-                return "[BLOCKED] dangerous command in safe mode."
+        blocked = check_shell(cmd, exec_mode=self.exec_mode)
+        if blocked:
+            return blocked
+        # Compass witness via Helix (non-blocking except WITNESS hard deny if returned)
+        if self.use_helix and helix_bridge is not None and self.exec_mode != "full":
+            try:
+                w = helix_bridge.witness(
+                    f"SHELL: {cmd}", session_id=self.session_id
+                )
+                inner = (w.get("result") or {}) if w.get("ok") else {}
+                if isinstance(inner, dict) and inner.get("classification") == "WITNESS":
+                    return f"[BLOCKED] Helix compass WITNESS: {inner.get('reason') or 'denied'}"
+            except Exception as e:  # pragma: no cover
+                logger.debug("helix witness skip: %s", e)
         if self.exec_mode == "interactive":
             consent = input(f"Run: {cmd} ? [y/N] ")
             if consent.lower() != "y":
                 return "[SKIPPED] declined"
         try:
             env = os.environ.copy()
-            # quiet noisy native logging from xai/grpc in child processes
             env.setdefault("GRPC_VERBOSITY", "ERROR")
             env.setdefault("GLOG_minloglevel", "2")
             result = subprocess.run(
@@ -880,7 +950,6 @@ No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
                 env=env,
             )
             raw = (result.stdout or "") + (result.stderr or "")
-            # drop absl/grpc fork spam that confuses verify
             lines = [
                 ln
                 for ln in raw.splitlines()
@@ -888,10 +957,11 @@ No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
                 and "ev_poll_posix" not in ln
                 and "fork_posix" not in ln
             ]
-            output = "\n".join(lines)
-            output = f"[exit {result.returncode}]\n{output}"
-            self._add_to_memory(f"SHELL `{cmd}`:\n{output[:4000]}", label="shell")
-            return output
+            output = f"[exit {result.returncode}]\n" + "\n".join(lines)
+            self._add_to_memory(
+                f"SHELL `{cmd}`:\n{redact(output[:4000])}", label="shell"
+            )
+            return redact(output)
         except subprocess.TimeoutExpired:
             return "[TIMEOUT] command exceeded 120s"
 

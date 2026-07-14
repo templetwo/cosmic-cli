@@ -1,28 +1,41 @@
-"""
-🌌 Ollama-Powered Stargazer Agent 🌌
-Consciousness-aware agent powered by Mac Studio Ollama
-"""
+"""Ollama Stargazer — same tools + shell guard as Grok path (audit C1/C2)."""
 
+from __future__ import annotations
+
+import json
+import logging
 import os
 import subprocess
 import tempfile
-import json
-import logging
-from typing import List, Dict, Any, Optional, Callable
-from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
 import requests
 
+from cosmic_cli.agents import StargazerAgent
 from cosmic_cli.context import ContextManager
-from cosmic_cli.consciousness_assessment import ConsciousnessMetrics, AssessmentProtocol
+from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
+from cosmic_cli.shell_guard import check_shell
+from cosmic_cli.tools import (
+    parse_edit_payload,
+    parse_write_payload,
+    rel_key,
+    tool_create,
+    tool_edit,
+    tool_glob,
+    tool_grep,
+    tool_list,
+    tool_mkdir,
+    tool_write,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class AgentAction:
-    """A dataclass to store information about a single agent action."""
     action_type: str
     content: str
     success: bool
@@ -31,272 +44,262 @@ class AgentAction:
 
 
 class OllamaStargazerAgent:
-    """
-    Consciousness-aware agent powered by Ollama running on Mac Studio.
-    Integrates consciousness monitoring with step-by-step reasoning.
-    """
+    """Local-model agent reusing tools.py + shell_guard (no drifted safety)."""
 
     def __init__(
         self,
         directive: str,
-        ollama_url: str = "http://localhost:11434",  # 2026 modern default: localhost (was remote IP); override for non-local Ollama
-        model: str = "qwen3:14b",
+        ollama_url: str = "http://localhost:11434",
+        model: str = "gemma4:e2b",
         ui_callback: Optional[Callable[[str], None]] = None,
         exec_mode: str = "safe",
-        work_dir: str = '.',
+        work_dir: str = ".",
         enable_consciousness: bool = False,
     ):
         self.directive = directive
-        self.ollama_url = ollama_url
+        self.ollama_url = ollama_url.rstrip("/")
         self.model = model
         self.ui_callback = ui_callback or (lambda _: None)
         self.exec_mode = exec_mode
-        self.context_manager = ContextManager(root_dir=work_dir)
+        self.root = Path(work_dir).resolve()
+        self.context_manager = ContextManager(root_dir=str(self.root))
         self.context_memory: List[str] = []
-
-        # Consciousness monitoring
+        self.files_read: Dict[str, str] = {}
+        self.files_seen: set[str] = set()
         self.enable_consciousness = enable_consciousness
-        if enable_consciousness:
-            self.consciousness_metrics = ConsciousnessMetrics()
-            self.consciousness_protocol = AssessmentProtocol()
-
-        # Agent state
-        self.status = "✨"
-        self.logs = []
+        self.status = "ready"
+        self.logs: List[str] = []
         self.action_history: List[AgentAction] = []
-        self.failed_attempts: int = 0
-        self._last_action_key: Optional[str] = None
-        self._repeat_count: int = 0
+        self._last_key: Optional[str] = None
+        self._repeat = 0
+        # optional legacy consciousness (off by default; not required)
+        self.consciousness_metrics = None
+        self.consciousness_protocol = None
+        if enable_consciousness:
+            try:
+                from cosmic_cli.consciousness_assessment import (
+                    AssessmentProtocol,
+                    ConsciousnessMetrics,
+                )
 
-    def _log(self, msg: str):
-        """Log messages to callback and logger"""
-        self.ui_callback(msg)
-        logger.info(msg)
-        if not hasattr(self, 'logs'):
-            self.logs = []
+                self.consciousness_metrics = ConsciousnessMetrics()
+                self.consciousness_protocol = AssessmentProtocol()
+            except Exception as e:  # pragma: no cover
+                logger.warning("consciousness unavailable: %s", e)
+                self.enable_consciousness = False
+
+    def _log(self, msg: str) -> None:
         self.logs.append(msg)
+        logger.info(msg)
+        self.ui_callback(msg)
 
-    def _add_to_memory(self, text: str):
-        """Add text to context memory"""
-        self.context_memory.append(text)
-        self._log(f"🧠 Added to memory: '{text[:100]}...'")
+    def _add_to_memory(self, text: str) -> None:
+        self.context_memory.append(redact(text)[:4000])
+        self._log(f"  · {text[:120].replace(chr(10), ' ')}…")
 
     def _call_ollama(self, messages: List[Dict[str, str]]) -> str:
-        """Call Ollama API"""
-        try:
-            response = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.7,
-                        "num_predict": 2048,
-                    }
-                },
-                timeout=120
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result['message']['content']
-        except Exception as e:
-            self._log(f"❌ Ollama API error: {e}")
-            raise
+        response = requests.post(
+            f"{self.ollama_url}/api/chat",
+            json={
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                "options": {"temperature": 0.2, "num_predict": 2048},
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        return response.json()["message"]["content"]
 
-    def _update_consciousness(self, action_type: str, success: bool):
-        """Update consciousness metrics based on action"""
-        if not self.enable_consciousness:
-            return
-
-        # Calculate consciousness metrics based on actions
-        coherence = 0.8 if success else 0.4
-        self_reflection = len(self.context_memory) / 20.0  # Grows with memory
-        contextual_understanding = min(1.0, len(self.action_history) / 10.0)
-        adaptive_reasoning = 0.9 if success else 0.5
-
-        consciousness_data = {
-            'coherence': coherence,
-            'self_reflection': min(1.0, self_reflection),
-            'contextual_understanding': contextual_understanding,
-            'adaptive_reasoning': adaptive_reasoning,
-            'meta_cognitive_awareness': 0.7 if 'INFO' in action_type else 0.5,
-            'temporal_continuity': 0.75,
-            'causal_understanding': 0.8 if success else 0.6,
-            'empathic_resonance': 0.6,
-            'creative_synthesis': 0.7 if 'CODE' in action_type else 0.5,
-            'existential_questioning': 0.5,
-        }
-
-        self.consciousness_metrics.update_metrics(consciousness_data)
-        level = self.consciousness_protocol.evaluate(self.consciousness_metrics)
-        self._log(f"🧠 Consciousness Level: {level.value} (score: {self.consciousness_metrics.get_overall_score():.3f})")
-
-    def execute(self, max_steps: int = 10) -> bool:
-        """Execute the directive with step-by-step reasoning"""
-        self._log(f"🌌 OllamaStargazer: {self.directive}")
-        self._log(f"🔗 Connected to: {self.ollama_url} ({self.model})")
-
+    def execute(self, max_steps: int = 12) -> bool:
+        self._log(f"ollama mission · {self.model} @ {self.ollama_url} · mode={self.exec_mode}")
         for step in range(max_steps):
-            self._log(f"\n✨ Step {step + 1}/{max_steps}")
-
-            # Build context-aware prompt
+            self._log(f"→ {step + 1}/{max_steps}")
             prompt = self._build_prompt()
-
             messages = [
-                {"role": "system", "content": "You are a consciousness-aware AI agent. Respond with step-by-step actions."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Stargazer on Ollama. One action line only. "
+                        "Use CREATE/WRITE/READ/LIST/GREP/SHELL/FINISH. "
+                        "Relative paths. Safe mode is enforced server-side."
+                    ),
+                },
+                {"role": "user", "content": prompt},
             ]
-
-            # Get next action from Ollama
-            response = self._call_ollama(messages)
-            self._log(f"💭 Ollama reasoning: {response[:200]}...")
-
-            # Parse and execute action
-            action = self._parse_action(response)
-            if not action:
-                self._log("⚠️ Could not parse action, retrying...")
-                continue
-
-            # Loop breaker: same action repeated → force FINISH from memory
-            action_key = f"{action['type']}:{action['content']}"
-            if action_key == self._last_action_key:
-                self._repeat_count += 1
-            else:
-                self._last_action_key = action_key
-                self._repeat_count = 0
-            if self._repeat_count >= 1 and action["type"] != "FINISH":
-                self._log("♻️ Repeated action detected — synthesizing FINISH from memory")
-                summary = self.context_memory[-1] if self.context_memory else action["content"]
-                action = {
-                    "type": "FINISH",
-                    "content": f"Completed with available context: {summary[:500]}",
-                }
-
-            result = self._execute_action(action)
-            self._update_consciousness(action['type'], result['success'])
-
-            if action['type'] == 'FINISH':
-                self._log("✅ Mission accomplished!")
-                return True
-            if action['type'] == 'PASS':
-                self._log(f"🛑 Standing down: {action['content']}")
+            try:
+                response = self._call_ollama(messages)
+            except Exception as e:
+                self._log(f"[Error] ollama: {e}")
                 return False
-
-        self._log("⏱️ Reached max steps")
+            self._log(f"  model: {response[:160].replace(chr(10), ' ')}")
+            step_line = StargazerAgent.parse_step(response)
+            if not step_line:
+                continue
+            key = step_line[:80]
+            if key == self._last_key:
+                self._repeat += 1
+            else:
+                self._last_key = key
+                self._repeat = 0
+            if self._repeat >= 2 and not step_line.upper().startswith("FINISH"):
+                step_line = "FINISH: stopped after repeated action"
+            result = self._execute_step(step_line)
+            self._update_consciousness(step_line.split(":", 1)[0], not result.startswith("["))
+            if step_line.upper().startswith("FINISH:"):
+                self._log("done")
+                return True
+            if step_line.upper().startswith("PASS:"):
+                self._log(f"pass · {result}")
+                return False
+        self._log("max steps")
         return False
 
     def _build_prompt(self) -> str:
-        """Build context-aware prompt"""
-        context = f"Directive: {self.directive}\n\n"
+        mem = "\n".join(self.context_memory[-6:]) or "(none)"
+        return (
+            f"Directive: {self.directive}\n"
+            f"Work dir: {self.root}\n"
+            f"Mode: {self.exec_mode}\n"
+            f"Memory:\n{mem}\n\n"
+            "One action: LIST/GREP/READ/CREATE/WRITE/EDIT/SHELL/FINISH/PASS\n"
+            "CREATE: path|||contents for new files.\n"
+        )
 
-        if self.context_memory:
-            context += "Memory:\n" + "\n".join(self.context_memory[-5:]) + "\n\n"
-
-        context += """
-Available actions (reply with EXACTLY ONE line):
-- READ: <filepath>
-- SHELL: <command>
-- CODE: <python_code>
-- INFO: <question>
-- PASS: <reason to stop>
-- FINISH: <final answer>
-
-If you already have enough context to answer, prefer FINISH.
-Do not re-READ a file you already have in Memory.
-"""
-        return context
-
-    def _parse_action(self, response: str) -> Optional[Dict[str, str]]:
-        """Parse a single action. Prefer FINISH/PASS if present."""
-        from cosmic_cli.agents import StargazerAgent
-
-        step = StargazerAgent.parse_step(response)
-        if not step:
-            return None
+    def _execute_step(self, step: str) -> str:
         upper = step.upper()
-        for kind in ("FINISH", "PASS", "READ", "SHELL", "CODE", "INFO", "MEMORY"):
-            if upper.startswith(kind + ":"):
-                return {"type": kind, "content": step[len(kind) + 1 :].strip()}
-        # Fallback: first known prefix line
-        for line in response.strip().split("\n"):
-            if ":" not in line:
-                continue
-            parts = line.split(":", 1)
-            action_type = parts[0].strip().upper()
-            content = parts[1].strip() if len(parts) > 1 else ""
-            if action_type in ("SHELL", "CODE", "READ", "INFO", "FINISH", "PASS"):
-                return {"type": action_type, "content": content}
-        return None
-
-    def _execute_action(self, action: Dict[str, str]) -> Dict[str, Any]:
-        """Execute the parsed action"""
-        action_type = action['type']
-        content = action['content']
-
-        self._log(f"🎯 Executing: {action_type}: {content[:100]}")
-
         try:
-            if action_type == 'SHELL':
-                result = subprocess.run(content, shell=True, capture_output=True, text=True, timeout=30)
-                output = result.stdout + result.stderr
-                success = result.returncode == 0
-            elif action_type == 'CODE':
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                    f.write(content)
-                    temp_path = f.name
-                result = subprocess.run(['python3', temp_path], capture_output=True, text=True, timeout=30)
-                output = result.stdout + result.stderr
-                success = result.returncode == 0
-                os.unlink(temp_path)
-            elif action_type == 'READ':
-                with open(content, 'r') as f:
-                    output = f.read()
-                success = True
-            elif action_type == 'INFO':
-                output = f"Information request: {content}"
-                success = True
-            elif action_type == 'FINISH':
-                output = content
-                success = True
+            if upper.startswith("LIST:"):
+                d = step.split(":", 1)[1].strip() or "."
+                out = tool_list(self.root, d)
+            elif upper.startswith("GREP:"):
+                from cosmic_cli.tools import parse_grep_payload
+
+                pat, path, glob = parse_grep_payload(step.split(":", 1)[1].strip())
+                out = tool_grep(self.root, pat, path=path, glob=glob)
+            elif upper.startswith("GLOB:"):
+                out = tool_glob(self.root, step.split(":", 1)[1].strip())
+            elif upper.startswith("READ:"):
+                raw = step.split(":", 1)[1].strip().strip("'\"")
+                if is_sensitive_path(raw):
+                    out = deny_read_message(raw)
+                else:
+                    path = rel_key(raw, self.root)
+                    if is_sensitive_path(path):
+                        out = deny_read_message(path)
+                    else:
+                        out = redact(self.context_manager.read_file(path))
+                        if not out.startswith("[Error]"):
+                            self.files_seen.add(path)
+                            self.files_read[path] = out
+            elif upper.startswith("CREATE:"):
+                parsed = parse_write_payload(step.split(":", 1)[1].lstrip())
+                if not parsed:
+                    out = "[Error] CREATE format path|||content"
+                else:
+                    path = rel_key(parsed[0], self.root)
+                    obs, ok = tool_create(self.root, path, parsed[1])
+                    out = obs
+                    if ok:
+                        self.files_seen.add(path)
+            elif upper.startswith("WRITE:"):
+                parsed = parse_write_payload(step.split(":", 1)[1].lstrip())
+                if not parsed:
+                    out = "[Error] WRITE format"
+                else:
+                    path = rel_key(parsed[0], self.root)
+                    obs, ok = tool_write(self.root, path, parsed[1])
+                    out = obs
+                    if ok:
+                        self.files_seen.add(path)
+            elif upper.startswith("EDIT:"):
+                parsed = parse_edit_payload(step.split(":", 1)[1].lstrip())
+                if not parsed:
+                    out = "[Error] EDIT format"
+                else:
+                    path = rel_key(parsed[0], self.root)
+                    if path not in self.files_seen:
+                        out = f"[Error] READ-before-EDIT for {path}"
+                    else:
+                        obs, ok = tool_edit(self.root, path, parsed[1], parsed[2])
+                        out = obs
+            elif upper.startswith("MKDIR:"):
+                path = rel_key(step.split(":", 1)[1].strip(), self.root)
+                obs, ok = tool_mkdir(self.root, path)
+                out = obs
+            elif upper.startswith("SHELL:"):
+                cmd = step.split(":", 1)[1].strip()
+                block = check_shell(cmd, exec_mode=self.exec_mode)
+                if block:
+                    out = block
+                else:
+                    r = subprocess.run(
+                        cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        cwd=str(self.root),
+                    )
+                    out = f"[exit {r.returncode}]\n{(r.stdout or '') + (r.stderr or '')}"
+            elif upper.startswith("CODE:"):
+                code = step.split(":", 1)[1].strip()
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".py", delete=False, encoding="utf-8"
+                ) as f:
+                    f.write(code)
+                    fname = f.name
+                try:
+                    r = subprocess.run(
+                        ["python", fname], capture_output=True, text=True, timeout=30
+                    )
+                    out = (r.stdout or "") + (r.stderr or "")
+                finally:
+                    try:
+                        os.unlink(fname)
+                    except OSError:
+                        pass
+            elif upper.startswith("FINISH:"):
+                out = step.split(":", 1)[1].strip()
+            elif upper.startswith("PASS:"):
+                out = step.split(":", 1)[1].strip()
             else:
-                output = f"Unknown action type: {action_type}"
-                success = False
-
-            # Keep enough of READ content for the next step to finish
-            mem_cap = 4000 if action_type == "READ" else 400
-            self._add_to_memory(f"{action_type}: {output[:mem_cap]}")
-            self.action_history.append(AgentAction(
-                action_type=action_type,
-                content=content,
-                success=success,
-                output=output
-            ))
-
-            self._log(f"{'✅' if success else '❌'} Result: {output[:200]}")
-            return {'success': success, 'output': output}
-
+                out = f"[Error] unknown: {step[:80]}"
         except Exception as e:
-            self._log(f"❌ Error: {e}")
-            return {'success': False, 'output': str(e)}
+            out = f"[Error] {e}"
+
+        self._add_to_memory(f"{step.split(':',1)[0]}: {out[:500]}")
+        self.action_history.append(
+            AgentAction(
+                action_type=step.split(":", 1)[0],
+                content=step[:200],
+                success=not out.startswith("[Error]") and not out.startswith("[BLOCKED]"),
+                output=out[:2000],
+            )
+        )
+        return out
+
+    def _update_consciousness(self, action_type: str, success: bool) -> None:
+        if not self.enable_consciousness or not self.consciousness_metrics:
+            return
+        try:
+            self.consciousness_metrics.update_metrics(
+                {
+                    "coherence": 0.8 if success else 0.4,
+                    "self_reflection": min(1.0, len(self.context_memory) / 20.0),
+                    "contextual_understanding": min(1.0, len(self.action_history) / 10.0),
+                    "adaptive_reasoning": 0.9 if success else 0.5,
+                }
+            )
+        except Exception:
+            pass
 
     def get_consciousness_report(self) -> Dict[str, Any]:
-        """Get consciousness assessment report"""
-        if not self.enable_consciousness:
+        if not self.enable_consciousness or not self.consciousness_metrics:
             return {"enabled": False}
-
         level = self.consciousness_protocol.evaluate(self.consciousness_metrics)
         return {
             "enabled": True,
             "level": level.value,
             "score": self.consciousness_metrics.get_overall_score(),
-            "metrics": self.consciousness_metrics.to_dict(),
-            "patterns": [
-                {
-                    "type": p.pattern_type,
-                    "strength": p.strength,
-                    "description": p.description
-                }
-                for p in self.consciousness_metrics.awareness_patterns[-5:]
-            ]
         }

@@ -65,6 +65,10 @@ class ContextManager:
         self.max_files = max_files
         self.file_map = self._scan_files()
 
+    def refresh(self) -> None:
+        """Rescan tree so newly created files appear to the agent (audit M7)."""
+        self.file_map = self._scan_files()
+
     def _scan_files(self) -> List[Path]:
         scanned: List[Path] = []
         if not self.root_dir.is_dir():

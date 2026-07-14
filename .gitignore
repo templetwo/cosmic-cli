@@ -38,3 +38,9 @@ ENV/
 
 # Cosmic CLI specific files
 .cosmic_cli_memory.json
+# tooling
+.coverage
+.pytest_cache/
+.venv/
+*.egg-info/
+__pycache__/

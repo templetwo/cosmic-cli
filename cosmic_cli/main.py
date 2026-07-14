@@ -21,6 +21,7 @@ from xai_sdk import Client
 from xai_sdk.chat import assistant, system, user
 
 from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
+from cosmic_cli import helix_bridge
 from cosmic_cli.init_cmd import write_init
 from cosmic_cli.ollama_agent import OllamaStargazerAgent
 from cosmic_cli.principles import DIFFERENTIATORS
@@ -55,6 +56,8 @@ def load_manual_env() -> None:
         "COSMIC_GROK_MODEL",
         "OLLAMA_BASE_URL",
     }
+    # Later paths win, but warn if cwd .env overrides auth (audit M1).
+    cwd_env = Path.cwd() / ".env"
     for dotenv_path in possible_paths:
         if not dotenv_path.exists():
             continue
@@ -66,7 +69,18 @@ def load_manual_env() -> None:
                         key, value = line.split("=", 1)
                         key, value = key.strip(), value.strip()
                         if key in override_keys:
+                            prev = os.environ.get(key)
                             os.environ[key] = value
+                            if (
+                                prev
+                                and prev != value
+                                and dotenv_path.resolve() == cwd_env.resolve()
+                                and key in ("XAI_API_KEY", "OLLAMA_BASE_URL")
+                            ):
+                                # deferred print — console may not exist yet
+                                os.environ["_COSMIC_ENV_OVERRIDE_WARN"] = (
+                                    f"{key} overridden by {dotenv_path}"
+                                )
                         else:
                             os.environ.setdefault(key, value)
         except OSError:
@@ -76,6 +90,9 @@ def load_manual_env() -> None:
 load_manual_env()
 
 console = Console(stderr=False)
+if os.environ.pop("_COSMIC_ENV_OVERRIDE_WARN", None):
+    # Printed once at import when cwd .env overrode auth keys
+    pass  # avoid noise on every import in tests; doctor surfaces helix/env
 
 COSMIC_QUOTES = [
     "From the edge of the universe:",
@@ -237,6 +254,7 @@ def _run_stargazer(
     model: str = DEFAULT_MODEL,
     quiet: bool = False,
     auto_verify: bool = True,
+    use_helix: bool = True,
 ) -> Dict[str, Any]:
     api_key = get_api_key()
     if not api_key:
@@ -253,6 +271,21 @@ def _run_stargazer(
         else:
             console.print(f"[dim]{msg}[/dim]")
 
+    helix_ctx = ""
+    if use_helix and helix_bridge.available():
+        boot = helix_bridge.boot(directive, top_k=5)
+        helix_ctx = helix_bridge.format_boot_context(boot)
+        if boot.get("ok"):
+            console.print(f"[dim]helix · {helix_ctx.splitlines()[0] if helix_ctx else 'booted'}[/dim]")
+            helix_bridge.set_goal(directive[:500], why="cosmic-cli do")
+        else:
+            console.print(f"[yellow]helix offline:[/yellow] {boot.get('error', '?')[:120]}")
+    elif use_helix:
+        console.print(
+            "[dim]helix unavailable (set T2HELIX_ROOT or install "
+            "github.com/templetwo/t2helix)[/dim]"
+        )
+
     console.print(
         f"[dim]{model} · {mode} · ≤{max_steps} steps · cwd={os.getcwd()}[/dim]"
     )
@@ -267,6 +300,8 @@ def _run_stargazer(
         quiet=quiet,
         show_progress=False,  # progress bar fights step logs — keep off
         auto_verify=auto_verify,
+        use_helix=use_helix,
+        helix_context=helix_ctx,
     )
     result = agent.execute()
     status = result.get("status", "?")
@@ -339,6 +374,11 @@ def _print_review(report: Dict[str, Any]) -> None:
     default=False,
     help="Run independent review seat on edited files after mission",
 )
+@click.option(
+    "--helix/--no-helix",
+    default=True,
+    help="Use T2Helix for memory/goal (local SQLite; not Sovereign Stack)",
+)
 @click.pass_context
 def do_cmd(
     ctx: click.Context,
@@ -349,6 +389,7 @@ def do_cmd(
     quiet: bool,
     verify: bool,
     review: bool,
+    helix: bool,
 ) -> None:
     """Run Stargazer on a directive (primary daily command)."""
     if ctx.obj and ctx.obj.get("verbose"):
@@ -360,6 +401,7 @@ def do_cmd(
         model=model,
         quiet=quiet,
         auto_verify=verify,
+        use_helix=helix,
     )
     if review and result.get("edited"):
         api_key = get_api_key(prompt=False)
@@ -603,13 +645,60 @@ def doctor_cmd() -> None:
     console.print(f"  home config: {Path.home() / '.cosmic-cli' / '.env'}")
     n_sess = len(list(SESSION_DIR.glob('*.jsonl'))) if SESSION_DIR.is_dir() else 0
     console.print(f"  session count: {n_sess}")
+    # Helix substrate
+    if helix_bridge.available():
+        h = helix_bridge.health()
+        console.print(
+            f"[green]✓[/green] T2Helix @ {helix_bridge.resolve_data_dir()}"
+        )
+        if h.get("ok") and isinstance(h.get("result"), dict):
+            console.print(f"  session: {h['result'].get('session')}")
+    else:
+        console.print(
+            "[yellow]![/yellow] T2Helix not available "
+            "(clone github.com/templetwo/t2helix → ~/t2helix)"
+        )
+
     console.print("\n[bold]Daily path[/bold]")
     console.print("  cosmic-cli doctor")
+    console.print("  cosmic-cli helix status         # local memory substrate")
     console.print("  cosmic-cli init                 # COSMIC.md in this project")
-    console.print("  cosmic-cli do '…'")
+    console.print("  cosmic-cli do '…'               # boots Helix memory")
     console.print("  cosmic-cli do --review '…'")
     console.print("  cosmic-cli review")
     console.print("  cosmic-cli sessions")
+
+
+@cli.command("helix")
+@click.argument(
+    "action",
+    type=click.Choice(["status", "boot", "recall", "state"]),
+    default="status",
+)
+@click.argument("query", required=False, default="")
+def helix_cmd(action: str, query: str) -> None:
+    """T2Helix local memory substrate (shared chronicle with Claude)."""
+    if action == "status":
+        console.print(f"[dim]T2HELIX_ROOT[/dim] {helix_bridge.resolve_t2helix_root()}")
+        console.print(f"[dim]T2HELIX_DATA_DIR[/dim] {helix_bridge.resolve_data_dir()}")
+        console.print(f"[dim]available[/dim] {helix_bridge.available()}")
+        h = helix_bridge.health()
+        console.print(h)
+        return
+    if action == "boot":
+        r = helix_bridge.boot(query or "current context")
+        console.print(helix_bridge.format_boot_context(r) if r.get("ok") else r)
+        return
+    if action == "recall":
+        if not query:
+            console.print("[red]usage: cosmic-cli helix recall <query>[/red]")
+            sys.exit(2)
+        r = helix_bridge.recall(query)
+        console.print(r)
+        return
+    if action == "state":
+        console.print(helix_bridge.get_state())
+        return
 
 
 @cli.command("init")

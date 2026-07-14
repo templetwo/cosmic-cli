@@ -165,7 +165,9 @@ class TestStargazerAgent:
 
     @patch("subprocess.run")
     def test_shell_command_execution_safe_mode(self, mock_subprocess):
-        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
+        agent = StargazerAgent(
+            "test directive", api_key="test_key", quiet=True, use_helix=False
+        )
         mock_subprocess.return_value = Mock(
             stdout="file1.txt\nfile2.txt", stderr="", returncode=0
         )
@@ -174,9 +176,12 @@ class TestStargazerAgent:
         assert "file1.txt" in result
 
     def test_dangerous_command_blocked(self):
-        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
+        agent = StargazerAgent(
+            "test directive", api_key="test_key", quiet=True, use_helix=False
+        )
         result = agent._run_shell("rm -rf /")
         assert "BLOCKED" in result
+        assert "BLOCKED" in agent._run_shell("RM -RF /tmp/x")
 
     @patch("subprocess.run")
     @patch("tempfile.NamedTemporaryFile")
@@ -221,7 +226,9 @@ class TestStargazerAgent:
             mock_info.assert_called_once_with("system status")
 
     def test_safety_block_in_run_shell(self):
-        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
+        agent = StargazerAgent(
+            "test directive", api_key="test_key", quiet=True, use_helix=False
+        )
         result = agent._run_shell("rm -rf /important/data")
         assert "BLOCKED" in result
         with patch("subprocess.run") as mock_run:

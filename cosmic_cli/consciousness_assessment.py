@@ -482,7 +482,7 @@ class RealTimeConsciousnessMonitor:
             }
             with open(CONSCIOUSNESS_LOG_FILE, 'a') as f:
                 json.dump(log_entry, f)
-                f.write('\\n')
+                f.write('\n')
         except IOError as e:
             logger.error(f"Could not write to consciousness log file: {e}")
 

@@ -1,40 +1,10 @@
-# DEPRECATED (2026): Use pyproject.toml [project.dependencies] + [project.optional-dependencies].
-# Core dependencies (kept for reference / pip install -r only if needed)
-pytest
-pytest-cov
-pytest-asyncio
-openai==1.35.10
-textual>=0.40.0
-pyfiglet
-rich>=13.0.0
-click>=8.0.0
-psutil
-requests
-aiohttp
-
-# AI and consciousness dependencies
-xai-sdk
-numpy
-scipy
-
-# Enhanced CLI dependencies
-prompt-toolkit>=3.0.0
-markdown-it-py
-typing-extensions
-python-dotenv
-
-# Optional plotting dependencies
-# plotext  # Uncomment if needed for advanced plotting
-
-# Development dependencies
-black
-flake8
-mypy
-
-# Database and persistence
-sqlite3-utils
-
-# Testing utilities
-coverage
-factory-boy
-
+# Deprecated — install with: pip install -e ".[test]"
+# See pyproject.toml for the real dependency list.
+click>=8.1
+python-dotenv>=1.0
+xai-sdk>=1.0
+rich>=13.0
+pyfiglet>=1.0
+textual>=0.40
+numpy>=1.26
+requests>=2.31
