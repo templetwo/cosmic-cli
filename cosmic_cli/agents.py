@@ -639,13 +639,18 @@ No prose outside the action.
                         continue
                     final_answer = self._body_after(next_step, "FINISH:")
                     if v:
-                        # strip noisy absl/grpc lines from receipt
                         clean = "\n".join(
                             ln
                             for ln in v.splitlines()
-                            if not ln.startswith("I0") and "ev_poll" not in ln
+                            if ln.strip()
+                            and not ln.startswith("I0")
+                            and "ev_poll" not in ln
+                            and not ln.startswith("[exit 0]")
                         )[:500]
-                        final_answer += f"\n\n[auto-verify]\n{clean}"
+                        if clean.strip():
+                            final_answer += f"\n[auto-verify] {clean.strip()[:300]}"
+                        else:
+                            final_answer += "\n[auto-verify: ok]"
                     self._log(f"done · {final_answer[:200]}")
                     final_result["results"].append(
                         {"step": "FINISH", "result": final_answer}
@@ -697,7 +702,7 @@ No prose outside the action.
         else:
             loop()
 
-        final_result["edited"] = list(self.files_edited)
+        final_result["edited"] = list(dict.fromkeys(self.files_edited))
         last = (
             final_result["results"][-1]["result"]
             if final_result["results"]
@@ -708,7 +713,9 @@ No prose outside the action.
             {
                 "event": "end",
                 "status": final_result["status"],
-                "edited": self.files_edited,
+                "edited": final_result["edited"],
+                "model": self.model,
+                "steps": self.steps_taken,
             }
         )
         return final_result

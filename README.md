@@ -2,7 +2,7 @@
 
 A **coding-interface agent** for the terminal — not a chat wrapper with a shell escape hatch.
 
-**Default model: `grok-4.5`**
+**Default model: `grok-4.5`** · **v0.4.2** · local only (no stack connector)
 
 ## What sets this apart
 
@@ -15,9 +15,9 @@ A **coding-interface agent** for the terminal — not a chat wrapper with a shel
 | Re-read forever | **File cache** + repeat → FINISH |
 | Soft safety | **Safe-mode blast radius** |
 | No trail | **Session transcript** + mission echoes |
-| "Done!" | **FINISH receipts** (what / evidence / residual) |
+| "Done!" | **FINISH receipts** + optional **review** seat |
 
-The model is the reasoner. **The filesystem is ground truth.** The loop + tools + gates are the product.
+The model is the reasoner. **The filesystem is ground truth.**
 
 ## Install
 
@@ -27,74 +27,65 @@ python3 -m venv venv && source venv/bin/activate
 pip install -e .
 ```
 
+Global launcher (if `~/bin` is on your PATH):
+
+```bash
+~/bin/cosmic-cli doctor    # COSMIC_CLI_HOME defaults to ~/cosmic-cli
+```
+
 ## Config
 
-`.env` (gitignored):
+Loaded in order (**later wins**): package `.env` → `~/.cosmic-cli/.env` → cwd `.env`
 
 ```
 XAI_API_KEY=xai-…
 COSMIC_GROK_MODEL=grok-4.5
+OLLAMA_BASE_URL=http://localhost:11434
 ```
 
-## Daily use
+## Daily path
 
 ```bash
 cosmic-cli doctor
+cosmic-cli sessions
 
-# Primary
-cosmic-cli do 'Find where DEFAULT_MODEL is set and explain how to override it.'
+# Work
+cosmic-cli do 'Find X and summarize how it works.'
+cosmic-cli do 'Change Y in file Z (valid code).'
+cosmic-cli do --review '…'          # build + independent review on diffs
 
-# Make a change (agent will READ → EDIT → verify)
-cosmic-cli do 'In scratch/note.txt, change hello to hello world. Create the file if needed.'
-
-# Options
-cosmic-cli do --mode safe --max-steps 20 --no-verify -q '…'
-cosmic-cli do --model grok-4.3 '…'
-cosmic-cli do --review '…'   # build, then independent review seat on diffs
-
-# Review only (latest session or explicit paths)
+# Review only
 cosmic-cli review
-cosmic-cli review --session 20260713T235943Z
 cosmic-cli review --path note.py --directive 'change greeting'
 
-cosmic-cli ask '…'      # one-shot, no tools
+# Other
+cosmic-cli ask '…'
 cosmic-cli chat
-cosmic-cli analyze path
-cosmic-cli stargazer ollama --model gemma4:e2b '…'   # local fallback
+cosmic-cli stargazer ollama --model gemma4:e2b '…'
 ```
 
-## Action vocabulary
+## Actions
 
 ```
-GLOB: **/*.py
-GREP: pattern | path | glob=*.py
-LIST: .
-READ: path/to/file
-EDIT: path|||exact_old|||new
-WRITE: path|||full_contents
-DIFF: path
-SHELL: command
-CODE: python
-TEST: tests/ -q
-TODO: ["step1","step2"]
-PASS: blocker
-FINISH: receipt
+GLOB / GREP / LIST / READ / EDIT / WRITE / DIFF
+SHELL / CODE / TEST / TODO / PASS / FINISH
 ```
+
+`EDIT: path|||old|||new` — old must match once; quotes preserved; Python syntax gated.
 
 ## Artifacts
 
-- Mission echoes: `~/.cosmic_echo.jsonl`
-- Session logs: `~/.cosmic-cli/sessions/<id>.jsonl`
-- Edit backups: `*.cosmicbak` next to edited files
+| What | Where |
+|------|--------|
+| Mission echoes | `~/.cosmic_echo.jsonl` |
+| Sessions | `~/.cosmic-cli/sessions/<id>.jsonl` |
+| Reviews | `~/.cosmic-cli/sessions/<id>.review.json` |
+| Edit backups | `*.cosmicbak` next to files |
 
 ## Tests
 
 ```bash
 pytest tests/ -q
 ```
-
-## Version
-
-**0.4.1** — coding-interface loop + independent `review` seat (no stack bridge yet).
 
 MIT · Temple of Two

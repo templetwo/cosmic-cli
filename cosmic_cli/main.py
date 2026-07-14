@@ -36,14 +36,24 @@ logging.getLogger("cosmic_cli").setLevel(logging.WARNING)
 
 
 def load_manual_env() -> None:
-    """Load .env. Cosmic auth keys from the file win over a stale shell export."""
+    """Load .env from multiple locations (later paths win).
+
+    Order: package root → ~/.cosmic-cli/.env → cwd/.env
+    So project-local overrides home, home overrides install defaults.
+    Auth keys from file always override a stale shell export.
+    """
+    package_root = Path(__file__).resolve().parent.parent
     possible_paths = [
-        Path.cwd() / ".env",
-        Path(__file__).resolve().parent.parent / ".env",
-        Path(__file__).parent / ".env",
+        package_root / ".env",
         Path.home() / ".cosmic-cli" / ".env",
+        Path.cwd() / ".env",
     ]
-    override_keys = {"XAI_API_KEY", "GROK_API_KEY", "COSMIC_GROK_MODEL", "OLLAMA_BASE_URL"}
+    override_keys = {
+        "XAI_API_KEY",
+        "GROK_API_KEY",
+        "COSMIC_GROK_MODEL",
+        "OLLAMA_BASE_URL",
+    }
     for dotenv_path in possible_paths:
         if not dotenv_path.exists():
             continue
@@ -58,7 +68,6 @@ def load_manual_env() -> None:
                             os.environ[key] = value
                         else:
                             os.environ.setdefault(key, value)
-            break
         except OSError:
             pass
 
@@ -259,13 +268,22 @@ def _run_stargazer(
         "max_steps": "yellow",
         "error": "red",
     }.get(status, "white")
-    console.print(f"[{color}]status: {status}[/{color}]  [dim]session {result.get('session')}[/dim]")
-    if result.get("edited"):
-        console.print(f"[yellow]edited:[/yellow] {', '.join(result['edited'])}")
+    console.print(
+        f"[{color}]status: {status}[/{color}]  "
+        f"[dim]session {result.get('session')} · model {result.get('model', model)}[/dim]"
+    )
+    edited = list(dict.fromkeys(result.get("edited") or []))  # unique, order kept
+    result["edited"] = edited
+    if edited:
+        console.print(f"[yellow]edited:[/yellow] {', '.join(edited)}")
     if result.get("results"):
         last = result["results"][-1]
-        body = str(last.get("result", ""))
-        console.print(Panel(body[:4000], title="result", border_style=color))
+        body = str(last.get("result", "")).strip()
+        # drop empty auto-verify noise
+        lines = [ln for ln in body.splitlines() if ln.strip()]
+        body = "\n".join(lines)
+        if body:
+            console.print(Panel(body[:4000], title="result", border_style=color))
     return result
 
 
@@ -311,7 +329,9 @@ def _print_review(report: Dict[str, Any]) -> None:
     default=False,
     help="Run independent review seat on edited files after mission",
 )
+@click.pass_context
 def do_cmd(
+    ctx: click.Context,
     directive: str,
     mode: str,
     max_steps: int,
@@ -321,6 +341,8 @@ def do_cmd(
     review: bool,
 ) -> None:
     """Run Stargazer on a directive (primary daily command)."""
+    if ctx.obj and ctx.obj.get("verbose"):
+        set_verbose(True)
     result = _run_stargazer(
         directive,
         mode=mode,
@@ -535,26 +557,84 @@ def doctor_cmd() -> None:
         except Exception as e:
             console.print(f"[red]✗[/red] models API failed: {e}")
 
-    # ollama
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    try:
-        import urllib.request
+    # ollama — try configured URL, then localhost fallback
+    import urllib.request
 
-        with urllib.request.urlopen(f"{ollama_url}/api/tags", timeout=3) as resp:
-            tags = json.loads(resp.read().decode())
-        names = [m.get("name") for m in tags.get("models", [])]
-        console.print(f"[green]✓[/green] Ollama @ {ollama_url}: {', '.join(names) or '(no models)'}")
-    except Exception as e:
-        console.print(f"[dim]·[/dim] Ollama not reachable ({ollama_url}): {e}")
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    ollama_ok = False
+    for url in dict.fromkeys([ollama_url, "http://localhost:11434"]):
+        try:
+            with urllib.request.urlopen(f"{url}/api/tags", timeout=2) as resp:
+                tags = json.loads(resp.read().decode())
+            names = [m.get("name") for m in tags.get("models", [])]
+            console.print(
+                f"[green]✓[/green] Ollama @ {url}: {', '.join(names) or '(no models)'}"
+            )
+            if url != ollama_url:
+                console.print(
+                    f"[yellow]![/yellow] OLLAMA_BASE_URL={ollama_url} failed; "
+                    "using localhost. Update ~/.cosmic-cli/.env"
+                )
+            ollama_ok = True
+            break
+        except Exception:
+            continue
+    if not ollama_ok:
+        console.print(
+            f"[dim]·[/dim] Ollama not reachable ({ollama_url}). "
+            "Local fallback: cosmic-cli stargazer ollama --ollama-url http://localhost:11434"
+        )
 
     console.print(f"  cwd: {os.getcwd()}")
+    console.print(f"  package: {Path(__file__).resolve().parent.parent}")
     console.print(f"  echo file: {Path.home() / '.cosmic_echo.jsonl'}")
     console.print(f"  sessions: {SESSION_DIR}")
     console.print(f"  chat memory: {MEMORY_FILE}")
-    console.print("\n[bold]What sets this apart[/bold]")
-    for line in DIFFERENTIATORS.strip().splitlines():
-        if line.strip():
-            console.print(f"  {line}")
+    console.print(f"  home config: {Path.home() / '.cosmic-cli' / '.env'}")
+    n_sess = len(list(SESSION_DIR.glob('*.jsonl'))) if SESSION_DIR.is_dir() else 0
+    console.print(f"  session count: {n_sess}")
+    console.print("\n[bold]Daily path[/bold]")
+    console.print("  cosmic-cli doctor")
+    console.print("  cosmic-cli do '…'")
+    console.print("  cosmic-cli do --review '…'")
+    console.print("  cosmic-cli review")
+    console.print("  cosmic-cli sessions")
+
+
+@cli.command("sessions")
+@click.option("-n", "--limit", default=10, show_default=True, type=int)
+def sessions_cmd(limit: int) -> None:
+    """List recent mission sessions."""
+    if not SESSION_DIR.is_dir():
+        console.print("[dim]No sessions yet.[/dim]")
+        return
+    files = sorted(SESSION_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        console.print("[dim]No sessions yet.[/dim]")
+        return
+    for path in files[:limit]:
+        directive = ""
+        status = "?"
+        edited: list = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                ev = json.loads(line)
+                if ev.get("event") == "start":
+                    directive = (ev.get("directive") or "")[:60]
+                if ev.get("event") == "end":
+                    status = ev.get("status") or status
+                    edited = ev.get("edited") or edited
+        except (OSError, json.JSONDecodeError):
+            pass
+        rev_path = SESSION_DIR / f"{path.stem}.review.json"
+        rev = " · reviewed" if rev_path.exists() else ""
+        ed = f" · edited {','.join(edited)}" if edited else ""
+        console.print(
+            f"[cyan]{path.stem}[/cyan]  [{status}]{ed}{rev}\n"
+            f"  [dim]{directive or '(no directive)'}[/dim]"
+        )
 
 
 @click.group()
