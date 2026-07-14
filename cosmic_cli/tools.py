@@ -13,14 +13,45 @@ from typing import Dict, List, Optional, Tuple
 from cosmic_cli.context import SKIP_DIR_NAMES
 
 
-def _under_root(root: Path, path: str) -> Path:
-    raw = path.strip().strip("'\"").lstrip("./")
-    target = (root / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
+def normalize_user_path(path: str, root: Path) -> Path:
+    """Resolve a user-supplied path under root.
+
+    CRITICAL: never use str.lstrip('./') — that strips ANY leading '/' or '.',
+    turning '/Users/foo' into 'Users/foo' (relative to cwd). Classic footgun.
+    """
+    raw = path.strip().strip("'\"")
+    if not raw or raw == ".":
+        return root.resolve()
+    root_r = root.resolve()
+    if raw.startswith("~/"):
+        candidate = (Path.home() / raw[2:]).expanduser().resolve()
+    elif raw == "~":
+        candidate = Path.home().resolve()
+    else:
+        p = Path(raw)
+        if p.is_absolute():
+            candidate = p.resolve()
+        else:
+            while raw.startswith("./"):
+                raw = raw[2:]
+            candidate = (root_r / raw).resolve()
     try:
-        target.relative_to(root.resolve())
+        candidate.relative_to(root_r)
     except ValueError as e:
-        raise PermissionError(f"path escapes work dir: {path}") from e
-    return target
+        raise PermissionError(
+            f"path escapes work dir ({root_r}): {path}"
+        ) from e
+    return candidate
+
+
+def rel_key(path: str, root: Path) -> str:
+    """Stable relative path key for caches (posix-style)."""
+    target = normalize_user_path(path, root)
+    return target.relative_to(root.resolve()).as_posix()
+
+
+def _under_root(root: Path, path: str) -> Path:
+    return normalize_user_path(path, root)
 
 
 def _skip(path: Path) -> bool:

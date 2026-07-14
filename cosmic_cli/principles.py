@@ -17,6 +17,8 @@ PRINCIPLES = """
 
 3. PREFER surgical EDIT over whole-file WRITE over SHELL sed/awk.
    Preserve surrounding context exactly. Match indentation.
+   Prefer paths relative to the working directory (e.g. Desktop/foo.md
+   when cwd is home). Absolute paths under the work dir are OK.
 
 4. VERIFY after change. If you edited code, run a targeted check
    (pytest path, python -m py_compile, npm test) when cheap.

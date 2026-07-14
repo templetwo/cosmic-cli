@@ -1,14 +1,46 @@
 from pathlib import Path
 
+import pytest
+
 from cosmic_cli.tools import (
+    normalize_user_path,
     parse_edit_payload,
     parse_grep_payload,
+    rel_key,
     tool_edit,
     tool_glob,
     tool_grep,
     tool_list,
     tool_write,
 )
+
+
+def test_normalize_absolute_under_root(tmp_path: Path):
+    """Regression: lstrip('./') must NOT strip absolute path slashes."""
+    desktop = tmp_path / "Desktop" / "notes"
+    desktop.mkdir(parents=True)
+    abs_path = str(desktop / "better-cli.md")
+    # classic bug: "/Users/...".lstrip("./") -> "Users/..."
+    assert abs_path.lstrip("./") != abs_path or abs_path.startswith("/")
+    target = normalize_user_path(abs_path, tmp_path)
+    assert target == (tmp_path / "Desktop" / "notes" / "better-cli.md").resolve()
+    assert rel_key(abs_path, tmp_path) == "Desktop/notes/better-cli.md"
+    assert rel_key("Desktop/notes/better-cli.md", tmp_path) == "Desktop/notes/better-cli.md"
+    assert rel_key("./Desktop/notes/better-cli.md", tmp_path) == "Desktop/notes/better-cli.md"
+
+
+def test_normalize_rejects_escape(tmp_path: Path):
+    with pytest.raises(PermissionError):
+        normalize_user_path("/etc/passwd", tmp_path)
+
+
+def test_write_absolute_lands_correctly(tmp_path: Path):
+    abs_path = str(tmp_path / "Desktop" / "x.md")
+    obs, ok = tool_write(tmp_path, abs_path, "# hi\n")
+    assert ok
+    assert (tmp_path / "Desktop" / "x.md").read_text(encoding="utf-8") == "# hi\n"
+    # must NOT create nested Users/... style garbage
+    assert not (tmp_path / "Users").exists()
 
 
 def test_list_and_glob(tmp_path: Path):

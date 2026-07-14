@@ -23,9 +23,11 @@ from xai_sdk.chat import user
 from cosmic_cli.context import ContextManager
 from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.tools import (
+    normalize_user_path,
     parse_edit_payload,
     parse_grep_payload,
     parse_write_payload,
+    rel_key,
     tool_edit,
     tool_glob,
     tool_grep,
@@ -369,7 +371,11 @@ No prose outside the action.
             return out
 
         if upper.startswith("READ:"):
-            file_path = self._body_after(step, "READ:").strip("'\"").lstrip("./")
+            raw = self._body_after(step, "READ:").strip("'\"")
+            try:
+                file_path = rel_key(raw, self.root)
+            except PermissionError as e:
+                return f"[Error] {e}"
             if file_path in self.files_read and file_path not in self.files_edited:
                 self._log(f"READ {file_path} (cache)")
                 return self.files_read[file_path]
@@ -389,14 +395,16 @@ No prose outside the action.
             parsed = parse_edit_payload(body)
             if not parsed:
                 return "[Error] EDIT format: path|||old_exact|||new  (triple pipe)"
-            path, old, new = parsed
-            path = path.strip().lstrip("./")
+            raw_path, old, new = parsed
+            try:
+                path = rel_key(raw_path.strip(), self.root)
+            except PermissionError as e:
+                return f"[Error] {e}"
             if path not in self.files_seen:
                 return (
                     f"[Error] READ-before-EDIT violated for {path}. "
                     "READ the file first, then EDIT with exact old_string."
                 )
-            # refresh cache from disk if invalidated after prior edit
             if path not in self.files_read:
                 self.files_read[path] = self.context_manager.read_file(path)
             self._log(f"EDIT {path}")
@@ -412,8 +420,11 @@ No prose outside the action.
             parsed = parse_write_payload(body)
             if not parsed:
                 return "[Error] WRITE format: path|||full_contents"
-            path, content = parsed
-            path = path.strip().lstrip("./")
+            raw_path, content = parsed
+            try:
+                path = rel_key(raw_path.strip(), self.root)
+            except PermissionError as e:
+                return f"[Error] {e}"
             target = self.root / path
             if (
                 target.exists()
@@ -434,7 +445,11 @@ No prose outside the action.
             return obs
 
         if upper.startswith("DIFF:"):
-            path = self._body_after(step, "DIFF:").strip().lstrip("./")
+            raw = self._body_after(step, "DIFF:").strip()
+            try:
+                path = rel_key(raw, self.root)
+            except PermissionError as e:
+                return f"[Error] {e}"
             bak = self.root / f"{path}.cosmicbak"
             cur = self.root / path
             if not bak.is_file() or not cur.is_file():
