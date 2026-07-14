@@ -23,15 +23,17 @@ from xai_sdk.chat import user
 from cosmic_cli.context import ContextManager
 from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.tools import (
-    normalize_user_path,
+    looks_like_path_bug,
     parse_edit_payload,
     parse_grep_payload,
     parse_write_payload,
     rel_key,
+    tool_create,
     tool_edit,
     tool_glob,
     tool_grep,
     tool_list,
+    tool_mkdir,
     tool_write,
 )
 
@@ -68,6 +70,8 @@ STEP_PREFIXES = (
     "LIST:",
     "READ:",
     "DIFF:",
+    "MKDIR:",
+    "CREATE:",
     "EDIT:",
     "WRITE:",
     "SHELL:",
@@ -79,6 +83,9 @@ STEP_PREFIXES = (
     "FINISH:",
     "PASS:",
 )
+
+DISCOVERY_PREFIXES = ("GLOB:", "GREP:", "LIST:", "SHELL:")
+MUTATION_PREFIXES = ("MKDIR:", "CREATE:", "EDIT:", "WRITE:")
 
 
 class StargazerAgent:
@@ -95,7 +102,7 @@ class StargazerAgent:
         max_steps: int = MAX_STEPS_DEFAULT,
         write_echo: bool = True,
         quiet: bool = False,
-        show_progress: bool = True,
+        show_progress: bool = False,
         session_id: Optional[str] = None,
         auto_verify: bool = True,
     ):
@@ -121,7 +128,9 @@ class StargazerAgent:
         self.logs: List[str] = []
         self._last_action_key: Optional[str] = None
         self._repeat_count: int = 0
+        self._discovery_streak: int = 0
         self.steps_taken: int = 0
+        self.warnings: List[str] = []
         self.session_id = session_id or datetime.now(timezone.utc).strftime(
             "%Y%m%dT%H%M%SZ"
         )
@@ -130,18 +139,25 @@ class StargazerAgent:
 
     # ── logging / memory ──────────────────────────────────────────
 
-    def _log(self, msg: str) -> None:
+    def _log(self, msg: str, *, obs: bool = False) -> None:
         self.logs.append(msg)
         logger.info(msg)
-        if not self.quiet:
-            self.ui_callback(msg)
+        if self.quiet:
+            return
+        # Compact: skip noisy obs previews unless they are errors
+        if obs and not msg.startswith("[Error]") and "Error" not in msg[:40]:
+            # one-line compact observation
+            short = msg if len(msg) <= 140 else msg[:137] + "..."
+            self.ui_callback(f"  · {short.replace(chr(10), ' ')}")
+            return
+        self.ui_callback(msg)
 
     def _add_to_memory(self, text: str, *, label: str = "") -> None:
         self.context_memory.append(text)
         if len(self.context_memory) > CONTEXT_MEMORY_CAP:
             self.context_memory = self.context_memory[-CONTEXT_MEMORY_CAP:]
-        preview = text if len(text) <= 110 else text[:107] + "..."
-        self._log(f"  obs{(' · ' + label) if label else ''}: {preview!r}")
+        preview = text if len(text) <= 160 else text[:157] + "..."
+        self._log(f"{label}: {preview}" if label else preview, obs=True)
 
     def _session_write(self, record: Dict[str, Any]) -> None:
         record = {
@@ -213,7 +229,7 @@ class StargazerAgent:
             upper = candidate.upper()
             for prefix in STEP_PREFIXES:
                 if upper.startswith(prefix):
-                    if prefix in ("EDIT:", "WRITE:") and "|||" in text:
+                    if prefix in ("EDIT:", "WRITE:", "CREATE:") and "|||" in text:
                         idx = text.upper().find(prefix)
                         body = text[idx + len(prefix) :].lstrip()
                         # keep internal quotes; only rstrip whitespace/newlines
@@ -272,10 +288,18 @@ class StargazerAgent:
     def _ask_grok_for_next_step(self) -> str:
         self._log(f"think · {self.model}")
         already = ", ".join(sorted(self.files_read.keys())) or "(none)"
+        # Hint relative Desktop when cwd is home
+        home_hint = ""
+        if self.root.resolve() == Path.home().resolve():
+            home_hint = (
+                "\nPATH HINT: cwd is HOME. Use Desktop/… not /Users/…/Desktop/… "
+                "For folder+file use CREATE: Desktop/folder/file.md|||…"
+            )
         prompt = f"""You are Stargazer, a coding agent operating in a real project directory.
 The filesystem is ground truth. You change it only through tools.
 
 {system_prompt_block()}
+{home_hint}
 
 DIRECTIVE:
 {self.directive}
@@ -285,15 +309,16 @@ MODEL: {self.model}
 MODE: {self.exec_mode}
 FILES CACHED: {already}
 EDITED: {', '.join(self.files_edited) or '(none)'}
+DISCOVERY STREAK: {self._discovery_streak} (if ≥2, stop probing — CREATE/WRITE/EDIT now)
 
 FILE TREE (partial):
 {self._file_tree()}
 
 CONTEXT / OBSERVATIONS:
-{self._context_blob() or "None yet — start with GLOB/GREP/LIST or READ."}
+{self._context_blob() or "None yet — LIST or CREATE/WRITE for new files."}
 
-Reply with EXACTLY ONE action line (EDIT/WRITE may span multiple lines after |||).
-No prose outside the action.
+Reply with EXACTLY ONE action line (CREATE/WRITE/EDIT may span lines after |||).
+No prose outside the action. Prefer relative paths. Prefer CREATE for new files.
 """
         try:
             chat = self.client.chat.create(
@@ -442,6 +467,40 @@ No prose outside the action.
                 self.files_edited.append(path)
                 self.files_seen.add(path)
                 self.files_read[path] = content
+                if looks_like_path_bug(path):
+                    self.warnings.append(f"suspicious path (nested Users?): {path}")
+            return obs
+
+        if upper.startswith("MKDIR:"):
+            raw = self._body_after(step, "MKDIR:").strip("'\"")
+            try:
+                path = rel_key(raw, self.root)
+            except PermissionError as e:
+                return f"[Error] {e}"
+            self._log(f"MKDIR {path}")
+            obs, ok = tool_mkdir(self.root, path)
+            self._add_to_memory(obs, label="mkdir")
+            return obs
+
+        if upper.startswith("CREATE:"):
+            body = self._body_after(step, "CREATE:")
+            parsed = parse_write_payload(body)
+            if not parsed:
+                return "[Error] CREATE format: path|||full_contents"
+            raw_path, content = parsed
+            try:
+                path = rel_key(raw_path.strip(), self.root)
+            except PermissionError as e:
+                return f"[Error] {e}"
+            self._log(f"CREATE {path}")
+            obs, ok = tool_create(self.root, path, content)
+            self._add_to_memory(obs, label="create")
+            if ok:
+                self.files_edited.append(path)
+                self.files_seen.add(path)
+                self.files_read[path] = content
+                if looks_like_path_bug(path):
+                    self.warnings.append(f"suspicious path (nested Users?): {path}")
             return obs
 
         if upper.startswith("DIFF:"):
@@ -573,6 +632,8 @@ No prose outside the action.
             "results": [],
             "status": "running",
             "edited": [],
+            "steps_taken": 0,
+            "warnings": [],
         }
 
         def loop(progress=None, task=None) -> None:
@@ -583,15 +644,52 @@ No prose outside the action.
                     self._log("[warn] empty step")
                     continue
 
-                self._log(f"→ {i + 1}/{self.max_steps} {next_step.splitlines()[0][:160]}")
+                head = next_step.splitlines()[0][:120]
+                self._log(f"→ {i + 1}/{self.max_steps} {head}")
                 upper = next_step.upper()
                 self._session_write({"event": "step", "n": i + 1, "action": next_step[:2000]})
+
+                # Discovery thrash counter
+                if any(upper.startswith(p) for p in DISCOVERY_PREFIXES):
+                    # SHELL that mutates (mkdir) counts as discovery-ish still for thrash
+                    self._discovery_streak += 1
+                elif any(upper.startswith(p) for p in MUTATION_PREFIXES):
+                    self._discovery_streak = 0
+                if self._discovery_streak >= 2 and not any(
+                    upper.startswith(p) for p in MUTATION_PREFIXES + ("FINISH:", "PASS:", "READ:")
+                ):
+                    wants_new = any(
+                        w in self.directive.lower()
+                        for w in (
+                            "create",
+                            "write",
+                            "folder",
+                            "file",
+                            "desktop",
+                            "make",
+                            "add",
+                            "new",
+                        )
+                    )
+                    if wants_new and not self.files_edited:
+                        self._add_to_memory(
+                            "STEERING: discovery streak ≥2. Stop ls/find. "
+                            "Use CREATE: relative/path/file|||contents "
+                            "(or MKDIR then WRITE). Prefer Desktop/... if cwd is home.",
+                            label="steer",
+                        )
+                        self._log("steer · CREATE/WRITE now (stop probing)")
+                        if progress is not None and task is not None:
+                            progress.update(task, advance=1)
+                        continue
 
                 # loop breaker for non-terminal repeats (threshold 2 — allow one retry)
                 action_key = upper.split(":", 1)[0] + ":" + (
                     next_step.split(":", 1)[1].strip()[:80] if ":" in next_step else ""
                 )
-                if not upper.startswith(("FINISH:", "PASS:", "EDIT:", "WRITE:")):
+                if not upper.startswith(
+                    ("FINISH:", "PASS:", "EDIT:", "WRITE:", "CREATE:", "MKDIR:")
+                ):
                     if action_key == self._last_action_key:
                         self._repeat_count += 1
                     else:
@@ -618,12 +716,10 @@ No prose outside the action.
                         if wants_change and not self.files_edited:
                             self._add_to_memory(
                                 "STEERING: repeated discovery action. "
-                                "File cache is enough — use EDIT/WRITE now. "
-                                "Do not re-READ cached files.",
+                                "Use CREATE/EDIT/WRITE now. Do not re-READ cached files.",
                                 label="steer",
                             )
-                            self._log("steer · use EDIT (cache warm)")
-                            # skip executing the duplicate discovery step
+                            self._log("steer · mutate (cache warm)")
                             if progress is not None and task is not None:
                                 progress.update(task, advance=1)
                             continue
@@ -718,6 +814,13 @@ No prose outside the action.
             loop()
 
         final_result["edited"] = list(dict.fromkeys(self.files_edited))
+        final_result["steps_taken"] = self.steps_taken
+        for p in final_result["edited"]:
+            if looks_like_path_bug(p):
+                w = f"path smell: {p} looks like nested Users/ — verify location"
+                if w not in self.warnings:
+                    self.warnings.append(w)
+        final_result["warnings"] = list(self.warnings)
         last = (
             final_result["results"][-1]["result"]
             if final_result["results"]
@@ -731,6 +834,7 @@ No prose outside the action.
                 "edited": final_result["edited"],
                 "model": self.model,
                 "steps": self.steps_taken,
+                "warnings": final_result["warnings"],
             }
         )
         return final_result

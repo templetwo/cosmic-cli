@@ -4,7 +4,7 @@
 from .agents import StargazerAgent
 from .context import ContextManager
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 __author__ = "Anthony Vasquez Sr. / Temple of Two"
 __description__ = "Grok-powered terminal agent with context-aware Stargazer loop"
 

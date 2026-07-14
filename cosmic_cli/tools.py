@@ -226,11 +226,28 @@ def tool_edit(
                 False,
             )
 
+    rel = target.relative_to(root.resolve()).as_posix()
     return (
-        f"EDIT ok: {path} (1 replacement, backup {bak.name}, "
-        f"{len(original)}→{len(updated)} chars)",
+        f"EDIT ok: rel={rel} abs={target} "
+        f"(1 replacement, backup {bak.name}, {len(original)}→{len(updated)} chars)",
         True,
     )
+
+
+def tool_mkdir(root: Path, path: str) -> Tuple[str, bool]:
+    """Create directory (parents ok)."""
+    try:
+        target = _under_root(root, path)
+    except PermissionError as e:
+        return f"[Error] {e}", False
+    try:
+        existed = target.is_dir()
+        target.mkdir(parents=True, exist_ok=True)
+        rel = target.relative_to(root.resolve()).as_posix()
+        state = "existed" if existed else "created"
+        return f"MKDIR ok: rel={rel} abs={target} ({state})", True
+    except OSError as e:
+        return f"[Error] mkdir failed: {e}", False
 
 
 def tool_write(root: Path, path: str, content: str, *, overwrite: bool = True) -> Tuple[str, bool]:
@@ -248,7 +265,45 @@ def tool_write(root: Path, path: str, content: str, *, overwrite: bool = True) -
         target.write_text(content, encoding="utf-8")
     except OSError as e:
         return f"[Error] write failed: {e}", False
-    return f"WRITE ok: {path} ({len(content)} chars)", True
+    rel = target.relative_to(root.resolve()).as_posix()
+    return (
+        f"WRITE ok: rel={rel} abs={target} ({len(content)} chars)",
+        True,
+    )
+
+
+def tool_create(root: Path, path: str, content: str) -> Tuple[str, bool]:
+    """One-shot: mkdir parents + write file. Preferred for 'folder then file' intents."""
+    try:
+        target = _under_root(root, path)
+    except PermissionError as e:
+        return f"[Error] {e}", False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            bak = target.with_suffix(target.suffix + ".cosmicbak")
+            shutil.copy2(target, bak)
+        target.write_text(content, encoding="utf-8")
+    except OSError as e:
+        return f"[Error] create failed: {e}", False
+    rel = target.relative_to(root.resolve()).as_posix()
+    return (
+        f"CREATE ok: rel={rel} abs={target} "
+        f"(parents ensured, {len(content)} chars)",
+        True,
+    )
+
+
+def looks_like_path_bug(rel_path: str) -> bool:
+    """Heuristic: nested Users/… under home workdir from the old lstrip bug."""
+    p = rel_path.replace("\\", "/")
+    if p.startswith("Users/") or "/Users/" in p:
+        return True
+    # accidental double home: home/Users/name/...
+    parts = p.split("/")
+    if len(parts) >= 2 and parts[0] == "Users":
+        return True
+    return False
 
 
 def parse_edit_payload(body: str) -> Optional[Tuple[str, str, str]]:

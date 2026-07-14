@@ -103,3 +103,23 @@ def test_write_tool(tmp_path: Path):
     obs, ok = tool_write(tmp_path, "new.txt", "hello")
     assert ok
     assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "hello"
+    assert "abs=" in obs
+    assert "rel=new.txt" in obs
+
+
+def test_mkdir_and_create(tmp_path: Path):
+    from cosmic_cli.tools import tool_create, tool_mkdir, looks_like_path_bug
+
+    obs, ok = tool_mkdir(tmp_path, "Desktop/notes")
+    assert ok
+    assert (tmp_path / "Desktop" / "notes").is_dir()
+    assert "abs=" in obs
+
+    obs, ok = tool_create(tmp_path, "Desktop/notes/x.md", "# hi\n")
+    assert ok
+    assert (tmp_path / "Desktop" / "notes" / "x.md").read_text(encoding="utf-8") == "# hi\n"
+    assert "CREATE ok" in obs
+    assert "abs=" in obs
+
+    assert looks_like_path_bug("Users/vaquez/Desktop/x.md")
+    assert not looks_like_path_bug("Desktop/x.md")

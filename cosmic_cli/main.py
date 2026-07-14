@@ -21,6 +21,7 @@ from xai_sdk import Client
 from xai_sdk.chat import assistant, system, user
 
 from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
+from cosmic_cli.init_cmd import write_init
 from cosmic_cli.ollama_agent import OllamaStargazerAgent
 from cosmic_cli.principles import DIFFERENTIATORS
 from cosmic_cli.review import (
@@ -242,11 +243,18 @@ def _run_stargazer(
         sys.exit(2)
 
     def on_update(msg: str) -> None:
-        console.print(f"[cyan]{msg}[/cyan]")
+        # dim progress, bright errors
+        if msg.startswith("[Error]") or msg.startswith("  · [Error]"):
+            console.print(f"[red]{msg}[/red]")
+        elif msg.startswith("→"):
+            console.print(f"[bold cyan]{msg}[/bold cyan]")
+        elif msg.startswith("steer"):
+            console.print(f"[yellow]{msg}[/yellow]")
+        else:
+            console.print(f"[dim]{msg}[/dim]")
 
     console.print(
-        f"[dim]model={model} · mode={mode} · max_steps={max_steps} · "
-        f"verify={'on' if auto_verify else 'off'} · cwd={os.getcwd()}[/dim]"
+        f"[dim]{model} · {mode} · ≤{max_steps} steps · cwd={os.getcwd()}[/dim]"
     )
     agent = StargazerAgent(
         directive=directive,
@@ -257,7 +265,7 @@ def _run_stargazer(
         model=model,
         max_steps=max_steps,
         quiet=quiet,
-        show_progress=not quiet,
+        show_progress=False,  # progress bar fights step logs — keep off
         auto_verify=auto_verify,
     )
     result = agent.execute()
@@ -269,17 +277,19 @@ def _run_stargazer(
         "error": "red",
     }.get(status, "white")
     console.print(
-        f"[{color}]status: {status}[/{color}]  "
-        f"[dim]session {result.get('session')} · model {result.get('model', model)}[/dim]"
+        f"[{color}]{status}[/{color}]  "
+        f"[dim]session {result.get('session')} · {result.get('steps_taken', '?')} steps[/dim]"
     )
-    edited = list(dict.fromkeys(result.get("edited") or []))  # unique, order kept
+    # steps_taken may only be on agent; mirror from results len if missing
+    edited = list(dict.fromkeys(result.get("edited") or []))
     result["edited"] = edited
     if edited:
-        console.print(f"[yellow]edited:[/yellow] {', '.join(edited)}")
+        console.print(f"[yellow]edited[/yellow] {', '.join(edited)}")
+    for w in result.get("warnings") or []:
+        console.print(f"[red]warn[/red] {w}")
     if result.get("results"):
         last = result["results"][-1]
         body = str(last.get("result", "")).strip()
-        # drop empty auto-verify noise
         lines = [ln for ln in body.splitlines() if ln.strip()]
         body = "\n".join(lines)
         if body:
@@ -595,10 +605,23 @@ def doctor_cmd() -> None:
     console.print(f"  session count: {n_sess}")
     console.print("\n[bold]Daily path[/bold]")
     console.print("  cosmic-cli doctor")
+    console.print("  cosmic-cli init                 # COSMIC.md in this project")
     console.print("  cosmic-cli do '…'")
     console.print("  cosmic-cli do --review '…'")
     console.print("  cosmic-cli review")
     console.print("  cosmic-cli sessions")
+
+
+@cli.command("init")
+@click.argument("directory", required=False, default=".")
+@click.option("--force", is_flag=True, help="Overwrite existing COSMIC.md")
+@click.option("--name", default="COSMIC.md", show_default=True)
+def init_cmd(directory: str, force: bool, name: str) -> None:
+    """Drop COSMIC.md agent notes into a project (no stack)."""
+    msg, ok = write_init(Path(directory), force=force, name=name)
+    console.print(f"[{'green' if ok else 'red'}]{msg}[/]")
+    if not ok:
+        sys.exit(1)
 
 
 @cli.command("sessions")
