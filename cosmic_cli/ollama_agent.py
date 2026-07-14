@@ -44,7 +44,7 @@ class OllamaStargazerAgent:
         ui_callback: Optional[Callable[[str], None]] = None,
         exec_mode: str = "safe",
         work_dir: str = '.',
-        enable_consciousness: bool = True,
+        enable_consciousness: bool = False,
     ):
         self.directive = directive
         self.ollama_url = ollama_url
@@ -65,6 +65,8 @@ class OllamaStargazerAgent:
         self.logs = []
         self.action_history: List[AgentAction] = []
         self.failed_attempts: int = 0
+        self._last_action_key: Optional[str] = None
+        self._repeat_count: int = 0
 
     def _log(self, msg: str):
         """Log messages to callback and logger"""
@@ -156,15 +158,32 @@ class OllamaStargazerAgent:
                 self._log("⚠️ Could not parse action, retrying...")
                 continue
 
+            # Loop breaker: same action repeated → force FINISH from memory
+            action_key = f"{action['type']}:{action['content']}"
+            if action_key == self._last_action_key:
+                self._repeat_count += 1
+            else:
+                self._last_action_key = action_key
+                self._repeat_count = 0
+            if self._repeat_count >= 1 and action["type"] != "FINISH":
+                self._log("♻️ Repeated action detected — synthesizing FINISH from memory")
+                summary = self.context_memory[-1] if self.context_memory else action["content"]
+                action = {
+                    "type": "FINISH",
+                    "content": f"Completed with available context: {summary[:500]}",
+                }
+
             result = self._execute_action(action)
             self._update_consciousness(action['type'], result['success'])
 
-            # Check if finished
             if action['type'] == 'FINISH':
-                self._log(f"✅ Mission accomplished!")
+                self._log("✅ Mission accomplished!")
                 return True
+            if action['type'] == 'PASS':
+                self._log(f"🛑 Standing down: {action['content']}")
+                return False
 
-        self._log(f"⏱️ Reached max steps")
+        self._log("⏱️ Reached max steps")
         return False
 
     def _build_prompt(self) -> str:
@@ -175,29 +194,39 @@ class OllamaStargazerAgent:
             context += "Memory:\n" + "\n".join(self.context_memory[-5:]) + "\n\n"
 
         context += """
-Available actions:
-- SHELL: <command> - Execute shell command
-- CODE: <python_code> - Run Python code
-- READ: <filepath> - Read file contents
-- INFO: <question> - Ask for information
-- FINISH: <summary> - Complete the task
+Available actions (reply with EXACTLY ONE line):
+- READ: <filepath>
+- SHELL: <command>
+- CODE: <python_code>
+- INFO: <question>
+- PASS: <reason to stop>
+- FINISH: <final answer>
 
-Respond with ONE action in this format:
-TYPE: content
+If you already have enough context to answer, prefer FINISH.
+Do not re-READ a file you already have in Memory.
 """
         return context
 
     def _parse_action(self, response: str) -> Optional[Dict[str, str]]:
-        """Parse action from response"""
-        lines = response.strip().split('\n')
-        for line in lines:
-            if ':' in line:
-                parts = line.split(':', 1)
-                action_type = parts[0].strip().upper()
-                content = parts[1].strip() if len(parts) > 1 else ""
+        """Parse a single action. Prefer FINISH/PASS if present."""
+        from cosmic_cli.agents import StargazerAgent
 
-                if action_type in ['SHELL', 'CODE', 'READ', 'INFO', 'FINISH']:
-                    return {'type': action_type, 'content': content}
+        step = StargazerAgent.parse_step(response)
+        if not step:
+            return None
+        upper = step.upper()
+        for kind in ("FINISH", "PASS", "READ", "SHELL", "CODE", "INFO", "MEMORY"):
+            if upper.startswith(kind + ":"):
+                return {"type": kind, "content": step[len(kind) + 1 :].strip()}
+        # Fallback: first known prefix line
+        for line in response.strip().split("\n"):
+            if ":" not in line:
+                continue
+            parts = line.split(":", 1)
+            action_type = parts[0].strip().upper()
+            content = parts[1].strip() if len(parts) > 1 else ""
+            if action_type in ("SHELL", "CODE", "READ", "INFO", "FINISH", "PASS"):
+                return {"type": action_type, "content": content}
         return None
 
     def _execute_action(self, action: Dict[str, str]) -> Dict[str, Any]:
@@ -234,7 +263,9 @@ TYPE: content
                 output = f"Unknown action type: {action_type}"
                 success = False
 
-            self._add_to_memory(f"{action_type}: {output[:200]}")
+            # Keep enough of READ content for the next step to finish
+            mem_cap = 4000 if action_type == "READ" else 400
+            self._add_to_memory(f"{action_type}: {output[:mem_cap]}")
             self.action_history.append(AgentAction(
                 action_type=action_type,
                 content=content,

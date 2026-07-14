@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cosmic-cli"
-version = "0.2.0"
-description = "Cosmic CLI: Grok-powered terminal agent with context awareness (modernized 2026)"
+version = "0.4.0"
+description = "Cosmic CLI: coding-interface Stargazer — search, edit, verify, receipts"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
@@ -20,6 +20,7 @@ dependencies = [
   "pyfiglet>=1.0",
   "textual>=0.40",
   "numpy>=1.26",
+  "requests>=2.31",
 ]
 [project.optional-dependencies]
 test = [

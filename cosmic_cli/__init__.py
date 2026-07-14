@@ -1,58 +1,40 @@
 #!/usr/bin/env python3
-"""
-🌌 Cosmic CLI - Advanced AI Agent Terminal Interface 🌌
-Powered by Grok-4 Consciousness Engine
+"""Cosmic CLI — Grok-powered terminal agent (Stargazer)."""
 
-A sophisticated terminal interface that combines AI agents with consciousness monitoring.
-"""
-
-# Core components (safe to import, no external API dependencies)
-from .context import ContextManager
 from .agents import StargazerAgent
+from .context import ContextManager
 
-# Consciousness system
-from .consciousness_assessment import (
-    ConsciousnessLevel,
-    ConsciousnessMetrics,
-    RealTimeConsciousnessMonitor,
-    ConsciousnessAnalyzer,
-    SelfAwarenessPattern,
-    ConsciousnessEvent,
-    setup_consciousness_assessment_system,
-    run_consciousness_assessment_demo
-)
+__version__ = "0.4.0"
+__author__ = "Anthony Vasquez Sr. / Temple of Two"
+__description__ = "Grok-powered terminal agent with context-aware Stargazer loop"
 
-# Plugin system
-from .plugins import BasePlugin, PluginManager, FileOperationsPlugin
-from .plugins.base import PluginMetadata
+# Consciousness modules are optional / legacy. Import on demand so core stays light.
+try:
+    from .consciousness_assessment import (  # noqa: F401
+        ConsciousnessEvent,
+        ConsciousnessLevel,
+        ConsciousnessMetrics,
+        ConsciousnessAnalyzer,
+        RealTimeConsciousnessMonitor,
+        SelfAwarenessPattern,
+        run_consciousness_assessment_demo,
+        setup_consciousness_assessment_system,
+    )
+    _HAS_CONSCIOUSNESS = True
+except Exception:  # pragma: no cover
+    _HAS_CONSCIOUSNESS = False
 
-__version__ = "0.2.0"
-__author__ = "Flamebearer"
-__description__ = "Advanced AI Agent Terminal Interface with Consciousness Monitoring"
+try:
+    from .plugins import BasePlugin, FileOperationsPlugin, PluginManager  # noqa: F401
+    from .plugins.base import PluginMetadata  # noqa: F401
+    _HAS_PLUGINS = True
+except Exception:  # pragma: no cover
+    _HAS_PLUGINS = False
 
 __all__ = [
-    # Core
-    'ContextManager',
-    'StargazerAgent',
-    
-    # Consciousness
-    'ConsciousnessLevel',
-    'ConsciousnessMetrics', 
-    'RealTimeConsciousnessMonitor',
-    'ConsciousnessAnalyzer',
-    'SelfAwarenessPattern',
-    'ConsciousnessEvent',
-    'setup_consciousness_assessment_system',
-    'run_consciousness_assessment_demo',
-    
-    # Plugins
-    'BasePlugin',
-    'PluginManager',
-    'FileOperationsPlugin',
-    'PluginMetadata',
-    
-    # Metadata
-    '__version__',
-    '__author__',
-    '__description__'
+    "ContextManager",
+    "StargazerAgent",
+    "__version__",
+    "__author__",
+    "__description__",
 ]

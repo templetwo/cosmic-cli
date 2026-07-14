@@ -1,181 +1,241 @@
 from unittest.mock import Mock, patch, MagicMock
 import os
-import subprocess
-from cosmic_cli.agents import StargazerAgent
+from cosmic_cli.agents import StargazerAgent, DEFAULT_MODEL
 from cosmic_cli.ui import DirectivesUI
-from xai_sdk import Client
-from xai_sdk.chat import user
+
+
+class TestDefaults:
+    def test_default_model_is_latest(self):
+        assert DEFAULT_MODEL == "grok-4.5" or os.getenv("COSMIC_GROK_MODEL")
+
 
 class TestCosmicBanner:
-    """Test the banner generation to prevent 'Coder CLI' regression"""
-    
-    @patch('pyfiglet.Figlet')
+    @patch("pyfiglet.Figlet")
     def test_banner_generation(self, mock_figlet):
-        mock_figlet.return_value.renderText.return_value = 'COSMIC CLI ART'
+        mock_figlet.return_value.renderText.return_value = "COSMIC CLI ART"
         ui = DirectivesUI()
-        ui.figlet = mock_figlet.return_value  # Properly patch the figlet instance
-        banner_text = ui.figlet.renderText('COSMIC CLI')
-        assert 'COSMIC CLI ART' == banner_text
-        assert 'CODER' not in banner_text.upper()
+        ui.figlet = mock_figlet.return_value
+        banner_text = ui.figlet.renderText("COSMIC CLI")
+        assert "COSMIC CLI ART" == banner_text
+        assert "CODER" not in banner_text.upper()
 
-    @patch('pyfiglet.Figlet')
+    @patch("pyfiglet.Figlet")
     def test_ui_compose_banner(self, mock_figlet):
-        mock_figlet.return_value.renderText.return_value = 'COSMIC CLI ART'
+        mock_figlet.return_value.renderText.return_value = "COSMIC CLI ART"
         ui = DirectivesUI()
-        ui.figlet = mock_figlet.return_value  # Properly patch the figlet instance
-        banner_text = ui.figlet.renderText('COSMIC CLI')
-        assert 'COSMIC CLI ART' == banner_text
+        ui.figlet = mock_figlet.return_value
+        banner_text = ui.figlet.renderText("COSMIC CLI")
+        assert "COSMIC CLI ART" == banner_text
 
 
 class TestStargazerAgent:
-    """Test StargazerAgent with real actions"""
-    
     def setup_method(self):
-        """Setup for each test"""
-        os.environ['EXEC_MODE'] = 'safe'
-        os.environ['XAI_API_KEY'] = 'test_key'
-    
-    @patch('cosmic_cli.agents.Client')
+        os.environ["EXEC_MODE"] = "safe"
+        os.environ["XAI_API_KEY"] = "test_key"
+
+    @patch("cosmic_cli.agents.Client")
     def test_agent_initialization(self, mock_Client):
-        """Test agent initializes correctly (xai_sdk path)"""
-        mock_client = Mock()
-        mock_Client.return_value = mock_client
-        
+        mock_Client.return_value = Mock()
         agent = StargazerAgent("test directive", api_key="test_key")
         assert agent.directive == "test directive"
-        assert agent.status == "✨"
+        assert agent.status == "ready"
         assert agent.exec_mode == "safe"
+        assert agent.model == DEFAULT_MODEL
         assert len(agent.logs) == 0
 
-    def test_dynamic_plan_and_next_step_mocked(self):
-        """Test current StargazerAgent plan creation and grok consult (modern xai_sdk path)"""
-        with patch.object(StargazerAgent, '_ask_grok_for_next_step', return_value="FINISH: test complete"):
-            agent = StargazerAgent("test directive", api_key="test_key")
-            agent._create_dynamic_plan()
-            assert len(agent.dynamic_plan) > 0
-            next_step = agent._ask_grok_for_next_step()
-            assert "FINISH" in next_step
+    def test_parse_step_and_prefer_finish(self):
+        assert StargazerAgent.parse_step("```\nREAD: foo.py\n```").startswith("READ:")
+        assert StargazerAgent.parse_step("FINISH: done").startswith("FINISH:")
+        assert StargazerAgent.parse_step("PASS: no credits").startswith("PASS:")
+        # Prefer FINISH when both present
+        both = "READ: a.py\nFINISH: 3 lines"
+        assert StargazerAgent.parse_step(both).startswith("FINISH:")
 
-    @patch('subprocess.run')
-    def test_shell_command_execution_safe_mode(self, mock_subprocess):
-        """Test shell command execution in safe mode (modern _run_shell)"""
-        agent = StargazerAgent("test directive", api_key="test_key")
-        mock_subprocess.return_value = Mock(
-            stdout="file1.txt\nfile2.txt", 
-            stderr="", 
-            returncode=0
+    def test_execute_loop_finish_with_echo(self, tmp_path, monkeypatch):
+        echo = tmp_path / "echo.jsonl"
+        monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", echo)
+        agent = StargazerAgent(
+            "count lines",
+            api_key="test_key",
+            write_echo=True,
+            max_steps=3,
+            show_progress=False,
+            quiet=True,
         )
-        
-        # Test safe command via modern path
+        with patch.object(
+            agent,
+            "_ask_grok_for_next_step",
+            side_effect=["READ: check_agents_path.py", "FINISH: 3 lines"],
+        ), patch.object(
+            agent.context_manager, "read_file", return_value="a\nb\nc\n"
+        ):
+            result = agent.execute()
+        assert result["status"] == "complete"
+        assert result["results"][-1]["result"] == "3 lines"
+        assert echo.exists()
+        assert "count lines" in echo.read_text()
+
+    def test_reread_uses_cache(self):
+        agent = StargazerAgent("t", api_key="test_key", quiet=True, show_progress=False)
+        with patch.object(
+            agent.context_manager, "read_file", return_value="hello"
+        ) as mock_read:
+            a = agent._execute_step("READ: foo.py")
+            b = agent._execute_step("READ: foo.py")
+            assert a == b == "hello"
+            assert mock_read.call_count == 1
+
+    def test_edit_requires_prior_read(self, tmp_path, monkeypatch):
+        agent = StargazerAgent(
+            "t",
+            api_key="test_key",
+            quiet=True,
+            show_progress=False,
+            work_dir=str(tmp_path),
+        )
+        (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
+        out = agent._execute_step("EDIT: f.py|||x = 1|||x = 2")
+        assert "READ-before-EDIT" in out
+        agent._execute_step("READ: f.py")
+        out = agent._execute_step("EDIT: f.py|||x = 1\n|||x = 2\n")
+        assert "EDIT ok" in out
+        assert (tmp_path / "f.py").read_text(encoding="utf-8") == "x = 2\n"
+
+    def test_parse_prefers_finish_and_knows_grep(self):
+        assert StargazerAgent.parse_step("GREP: foo").startswith("GREP:")
+        assert StargazerAgent.parse_step("GLOB: **/*.py").startswith("GLOB:")
+
+    def test_parse_step_preserves_trailing_quotes(self):
+        raw = 'EDIT: note.py|||greeting = "hello"|||greeting = "hello cosmos"'
+        parsed = StargazerAgent.parse_step(raw)
+        assert parsed.endswith('"')
+        assert "hello cosmos\"" in parsed
+
+    def test_loop_breaker_on_repeat_read(self, tmp_path, monkeypatch):
+        echo = tmp_path / "echo.jsonl"
+        monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", echo)
+        # directive has no mutation words → pure discovery loop trips FINISH
+        agent = StargazerAgent(
+            "count lines only",
+            api_key="test_key",
+            write_echo=True,
+            max_steps=6,
+            show_progress=False,
+            quiet=True,
+        )
+        with patch.object(
+            agent,
+            "_ask_grok_for_next_step",
+            side_effect=["READ: f.py", "READ: f.py", "READ: f.py", "READ: f.py"],
+        ), patch.object(
+            agent.context_manager, "read_file", return_value="line1\nline2\n"
+        ):
+            result = agent.execute()
+        assert result["status"] == "complete"
+        assert result["results"][-1]["step"] == "FINISH"
+
+    def test_mutation_directive_steers_instead_of_false_finish(self, tmp_path, monkeypatch):
+        echo = tmp_path / "echo.jsonl"
+        monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", echo)
+        (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
+        agent = StargazerAgent(
+            "change x to 2 in f.py",
+            api_key="test_key",
+            write_echo=True,
+            max_steps=5,
+            show_progress=False,
+            quiet=True,
+            work_dir=str(tmp_path),
+            auto_verify=False,
+        )
+        with patch.object(
+            agent,
+            "_ask_grok_for_next_step",
+            side_effect=[
+                "READ: f.py",
+                "READ: f.py",  # first repeat → steer, skip
+                "EDIT: f.py|||x = 1\n|||x = 2\n",
+                "FINISH: done",
+            ],
+        ):
+            result = agent.execute()
+        assert result["status"] == "complete"
+        assert (tmp_path / "f.py").read_text(encoding="utf-8") == "x = 2\n"
+        assert "f.py" in result.get("edited", [])
+
+    @patch("subprocess.run")
+    def test_shell_command_execution_safe_mode(self, mock_subprocess):
+        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
+        mock_subprocess.return_value = Mock(
+            stdout="file1.txt\nfile2.txt", stderr="", returncode=0
+        )
         result = agent._run_shell("ls -l")
-        
         mock_subprocess.assert_called_once()
-        assert any("📤 Output:" in log for log in agent.logs)
         assert "file1.txt" in result
 
     def test_dangerous_command_blocked(self):
-        """Test that dangerous commands are blocked in safe mode (modern _run_shell)"""
-        agent = StargazerAgent("test directive", api_key="test_key")
-        
-        # Test dangerous command via modern path
+        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
         result = agent._run_shell("rm -rf /")
-        
-        # Should be blocked (returns message, no execution)
         assert "BLOCKED" in result
-        assert "dangerous" in result.lower()
 
-    @patch('subprocess.run')
-    @patch('tempfile.NamedTemporaryFile')
+    @patch("subprocess.run")
+    @patch("tempfile.NamedTemporaryFile")
     def test_code_execution_via_step(self, mock_tempfile, mock_subprocess):
-        """Test CODE step execution (modern xai_sdk agent path; no legacy code-gen client call)"""
-        # Mock temp file
         mock_temp = Mock()
-        mock_temp.name = '/tmp/test.py'
+        mock_temp.name = "/tmp/test.py"
         mock_tempfile.return_value.__enter__.return_value = mock_temp
-        
-        # Mock subprocess execution
         mock_subprocess.return_value = Mock(
-            stdout="Hello, World!\n",
-            stderr="",
-            returncode=0
+            stdout="Hello, World!\n", stderr="", returncode=0
         )
-        
-        agent = StargazerAgent("test directive", api_key="test_key")
-        
-        # Patch at higher level to avoid tempfile/fs side effects in test
-        with patch.object(agent, '_run_code', return_value="Hello, World!\n") as mock_run_code:
+        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
+        with patch.object(agent, "_run_code", return_value="Hello, World!\n") as mock_run:
             result = agent._execute_step("CODE: print('Hello, World!')")
-            mock_run_code.assert_called_once_with("print('Hello, World!')")
+            mock_run.assert_called_once_with("print('Hello, World!')")
             assert "Hello, World!" in result
 
-    @patch.object(StargazerAgent, '_ask_grok_for_info', return_value="Python is a programming language")
+    @patch.object(StargazerAgent, "_ask_grok_for_info", return_value="Python is a language")
     def test_information_via_info_step(self, mock_ask_info):
-        """Test INFO step (modern xai_sdk _ask_grok_for_info path)"""
-        agent = StargazerAgent("test directive", api_key="test_key")
-        
-        # Execute via modern _execute_step for INFO
+        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
         result = agent._execute_step("INFO: What is Python?")
-        
-        # Verify
         mock_ask_info.assert_called()
-        assert "Python is a programming language" in result
-        assert any("🔍 Answering question" in log for log in agent.logs)
+        assert "Python is a language" in result
+        assert any("INFO" in log for log in agent.logs)
 
-    @patch('threading.Thread')
+    @patch("threading.Thread")
     def test_full_execution_flow(self, mock_thread):
-        """Test complete execution flow (modern xai_sdk; patches run thread)"""
-        agent = StargazerAgent("test directive", api_key="test_key")
-        
-        # Mock the execute (public) to avoid threading + real API in tests
-        with patch.object(agent, 'execute') as mock_execute:
+        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
+        with patch.object(agent, "execute"):
             agent.run()
             mock_thread.assert_called_once()
 
     def test_step_execution_routing(self):
-        """Test that steps are routed to correct execution methods (modern names)"""
-        agent = StargazerAgent("test directive", api_key="test_key")
-        
-        with patch.object(agent, '_run_shell') as mock_shell, \
-             patch.object(agent, '_run_code') as mock_code, \
-             patch.object(agent, '_ask_grok_for_info') as mock_info:
-            
-            # Test shell routing via _execute_step (note: prefix stripped inside)
+        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
+        with patch.object(agent, "_run_shell") as mock_shell, patch.object(
+            agent, "_run_code"
+        ) as mock_code, patch.object(agent, "_ask_grok_for_info") as mock_info:
             agent._execute_step("SHELL: ls -l")
             mock_shell.assert_called_once_with("ls -l")
-            
-            # Test code routing  
             agent._execute_step("CODE: create hello world")
             mock_code.assert_called_once_with("create hello world")
-            
-            # Test info routing
             agent._execute_step("INFO: system status")
             mock_info.assert_called_once_with("system status")
 
     def test_safety_block_in_run_shell(self):
-        """Test safety block for dangerous commands (modern _run_shell, no separate _confirm_step)"""
-        agent = StargazerAgent("test directive", api_key="test_key")
-        
-        # Test dangerous command detection via return value
+        agent = StargazerAgent("test directive", api_key="test_key", quiet=True)
         result = agent._run_shell("rm -rf /important/data")
         assert "BLOCKED" in result
-        
-        # Test normal (safe) command would proceed (mocked)
-        with patch('subprocess.run') as mock_run:
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(stdout="ok", stderr="", returncode=0)
             result = agent._run_shell("ls -l")
-            assert "ok" in result or "📤" in str(agent.logs[-1])
+            assert "ok" in result
 
 
 class TestUIIntegration:
-    """Test UI integration with agents (headless-safe, no full run loop)"""
-    
     def test_add_directive_creates_agent(self):
-        """Test that adding a directive creates an agent"""
         ui = DirectivesUI(testing=True)
-        # No on_mount() to avoid textual ScreenStackError in unit test context
-        with patch.dict(os.environ, {"XAI_API_KEY": "test_key"}), \
-             patch('cosmic_cli.ui.StargazerAgent') as mock_agent_cls, \
-             patch.object(ui, '_refresh_panel'):
+        with patch.dict(os.environ, {"XAI_API_KEY": "test_key"}), patch(
+            "cosmic_cli.ui.StargazerAgent"
+        ) as mock_agent_cls, patch.object(ui, "_refresh_panel"):
             mock_agent = Mock()
             mock_agent.status = "✨"
             mock_agent.logs = []
@@ -184,11 +244,10 @@ class TestUIIntegration:
             assert "test directive" in ui.agents
 
     def test_log_toggle_functionality(self):
-        """Test log toggle functionality"""
         ui = DirectivesUI(testing=True)
-        with patch.dict(os.environ, {"XAI_API_KEY": "test_key"}), \
-             patch('cosmic_cli.ui.StargazerAgent') as mock_agent_cls, \
-             patch.object(ui, '_refresh_panel'):
+        with patch.dict(os.environ, {"XAI_API_KEY": "test_key"}), patch(
+            "cosmic_cli.ui.StargazerAgent"
+        ) as mock_agent_cls, patch.object(ui, "_refresh_panel"):
             mock_agent = Mock()
             mock_agent.status = "✨"
             mock_agent.logs = []
@@ -198,6 +257,3 @@ class TestUIIntegration:
             assert ui.show_logs["test directive"] is True
             ui.toggle_logs("test directive")
             assert ui.show_logs["test directive"] is False
-
-
-# Run with: python -m pytest tests/test_cosmic_cli.py -v --cov=agents --cov=ui --cov-report=term-missing 

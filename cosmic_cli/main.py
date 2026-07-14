@@ -1,69 +1,66 @@
+"""Cosmic CLI entrypoint — Grok chat + Stargazer agent."""
+
+from __future__ import annotations
+
+import json
+import logging
 import os
-import click
-from xai_sdk import Client
-from xai_sdk.chat import user, system, assistant # Import user, system, and assistant functions
-from rich.console import Console
-from rich.text import Text
-from rich.panel import Panel
-import pyfiglet
 import random
 import subprocess
-import json
-from typing import Optional, List, Dict, Any
+import sys
 from pathlib import Path
-from cosmic_cli.ui import DirectivesUI
-from cosmic_cli.agents import StargazerAgent
-from cosmic_cli.ollama_agent import OllamaStargazerAgent
-import time
-from rich.progress import Progress
-from click.core import Command, Group
+from typing import Any, Dict, List, Optional
 
-# --- Manual .env loading ---
+import click
+import pyfiglet
+from click.core import Command, Group
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from xai_sdk import Client
+from xai_sdk.chat import assistant, system, user
+
+from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
+from cosmic_cli.ollama_agent import OllamaStargazerAgent
+from cosmic_cli.principles import DIFFERENTIATORS
+from cosmic_cli.ui import DirectivesUI
+
+# Quiet noisy library logs by default; --verbose re-enables agent INFO.
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("cosmic_cli").setLevel(logging.WARNING)
+
+
 def load_manual_env() -> None:
-    """Load environment variables from .env file with flexible path detection."""
-    # Try multiple possible .env locations
+    """Load .env. Cosmic auth keys from the file win over a stale shell export."""
     possible_paths = [
-        Path.cwd() / '.env',  # Current directory
-        Path(__file__).parent / '.env',  # Same directory as script
-        Path.home() / '.cosmic-cli' / '.env',  # User's home directory
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+        Path(__file__).parent / ".env",
+        Path.home() / ".cosmic-cli" / ".env",
     ]
-    
+    override_keys = {"XAI_API_KEY", "GROK_API_KEY", "COSMIC_GROK_MODEL", "OLLAMA_BASE_URL"}
     for dotenv_path in possible_paths:
-        if dotenv_path.exists():
-            try:
-                with open(dotenv_path) as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#') and '=' in line:
-                            key, value = line.split('=', 1)
-                            os.environ.setdefault(key.strip(), value.strip())
-                break
-            except Exception as e:
-                console.print(f"[bold yellow]Warning: Could not load .env from {dotenv_path}: {e}[/bold yellow]")
+        if not dotenv_path.exists():
+            continue
+        try:
+            with open(dotenv_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, value = line.split("=", 1)
+                        key, value = key.strip(), value.strip()
+                        if key in override_keys:
+                            os.environ[key] = value
+                        else:
+                            os.environ.setdefault(key, value)
+            break
+        except OSError:
+            pass
+
 
 load_manual_env()
-# --- End of manual loading ---
 
-console = Console()
-
-def get_api_key() -> Optional[str]:
-    """Prompt for XAI API key using click (hidden input) if not in env.
-    Sets os.environ for downstream use. Returns key or None.
-    Used by both CLI workflows and TUI.
-    """
-    api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
-    if not api_key:
-        api_key = click.prompt(
-            "[bold yellow]Enter your xAI API key[/bold yellow]",
-            type=str,
-            hide_input=True,
-        )
-        if api_key:
-            os.environ["XAI_API_KEY"] = api_key
-        else:
-            console.print("[bold red]Error: API key is required.[/bold red]")
-            return None
-    return api_key
+console = Console(stderr=False)
 
 COSMIC_QUOTES = [
     "From the edge of the universe:",
@@ -73,88 +70,108 @@ COSMIC_QUOTES = [
     "Behold, a message from the cosmos:",
 ]
 
-# Define the memory file path in the user's home directory
 MEMORY_FILE = Path.home() / ".cosmic_cli_memory.json"
 
+
+def get_api_key(*, prompt: bool = True) -> Optional[str]:
+    api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+    if api_key:
+        return api_key
+    if not prompt:
+        return None
+    api_key = click.prompt("Enter your xAI API key", type=str, hide_input=True)
+    if api_key:
+        os.environ["XAI_API_KEY"] = api_key
+        return api_key
+    console.print("[bold red]API key required.[/bold red]")
+    return None
+
+
+def set_verbose(verbose: bool) -> None:
+    level = logging.INFO if verbose else logging.WARNING
+    logging.getLogger("cosmic_cli").setLevel(level)
+    logging.getLogger("cosmic_cli.agents").setLevel(level)
+
+
 class CosmicCLI:
-    """Main CLI class to manage xAI interactions and state."""
-    
-    def __init__(self):
+    def __init__(self) -> None:
         self.chat_instance: Optional[Any] = None
         self.client_instance: Optional[Any] = None
-        self.console = Console()
-    
-    def save_memory(self, messages: List[Dict[str, str]]) -> None:
-        """Save conversation history to JSON file."""
-        try:
-            # Convert xai_sdk message objects back to dictionaries for saving
-            serializable_messages = []
-            for msg in messages:
-                if hasattr(msg, 'role') and hasattr(msg, 'content'):
-                    content = msg.content if isinstance(msg.content, str) else "<recursive agent memory>"
-                    serializable_messages.append({'role': msg.role, 'content': content})
 
-            with open(MEMORY_FILE, 'w') as f:
-                json.dump(serializable_messages, f, indent=4)
-        except Exception as e:
-            self.console.print(f"[bold red]Error saving conversation history: {e}[/bold red]")
+    def save_memory(self, messages: List[Any]) -> None:
+        try:
+            serializable: List[Dict[str, str]] = []
+            for msg in messages:
+                if hasattr(msg, "role") and hasattr(msg, "content"):
+                    content = (
+                        msg.content
+                        if isinstance(msg.content, str)
+                        else "<non-text>"
+                    )
+                    serializable.append({"role": msg.role, "content": content})
+                elif isinstance(msg, dict) and "role" in msg:
+                    serializable.append(
+                        {"role": msg["role"], "content": str(msg.get("content", ""))}
+                    )
+            MEMORY_FILE.write_text(
+                json.dumps(serializable, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            console.print(f"[red]Error saving history: {e}[/red]")
 
     def load_memory(self) -> List[Dict[str, str]]:
-        """Load conversation history from JSON file."""
-        if MEMORY_FILE.exists():
-            try:
-                with open(MEMORY_FILE, 'r') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                self.console.print("[bold yellow]Warning: Memory file is corrupted. Starting fresh.[/bold yellow]")
-                return []
-            except Exception as e:
-                self.console.print(f"[bold red]Error loading memory: {e}[/bold red]")
-                return []
-        return []
+        if not MEMORY_FILE.exists():
+            return []
+        try:
+            return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
 
     def append_to_memory(self, role: str, content: str) -> None:
-        """Append a single message to memory."""
-        current_history = self.load_memory()
-        current_history.append({"role": role, "content": content})
-        self.save_memory(current_history)
+        history = self.load_memory()
+        history.append({"role": role, "content": content})
+        self.save_memory(history)
 
-    def initialize_chat(self, load_history: bool = True) -> Optional[Any]:
-        """Initialize the xAI chat instance."""
+    def initialize_chat(
+        self, load_history: bool = True, model: str = DEFAULT_MODEL
+    ) -> Optional[Any]:
         api_key = get_api_key()
         if not api_key:
             return None
-        
         self.client_instance = Client(api_key=api_key)
-        self.chat_instance = self.client_instance.chat.create(model="grok-4")
-        
-        # Always add the system message first
-        self.chat_instance.append(system("You are a helpful and friendly AI assistant named Cosmic CLI. You are designed to provide concise and accurate answers. Your responses should sometimes include a touch of cosmic or space-related humor or imagery."))
-
+        self.chat_instance = self.client_instance.chat.create(model=model)
+        self.chat_instance.append(
+            system(
+                "You are Cosmic CLI, a concise terminal companion powered by Grok. "
+                "Be accurate first. Light cosmic tone is optional."
+            )
+        )
         if load_history:
-            history = self.load_memory()
-            # Append loaded history, converting dictionaries to xai_sdk message objects
-            for msg in history:
-                # Ensure we don't duplicate the system message if it's already added by initialize_chat
-                if msg['role'] == 'system':
-                    continue
-                elif msg['role'] == 'user':
-                    self.chat_instance.append(user(msg['content']))
-                elif msg['role'] == 'assistant':
-                    self.chat_instance.append(assistant(msg['content']))
-                # Add more roles if xai_sdk supports them (e.g., 'tool', 'function')
-
+            for msg in self.load_memory():
+                role, content = msg.get("role"), msg.get("content", "")
+                if role == "user":
+                    self.chat_instance.append(user(content))
+                elif role == "assistant":
+                    self.chat_instance.append(assistant(content))
         return self.chat_instance
 
-# Global CLI instance
+
 cosmic_cli = CosmicCLI()
 
+
 class CosmicHelpFormatter(click.HelpFormatter):
-    """Custom help formatter with cosmic styling."""
-    
     def write_usage(self, usage: str, prefix: Optional[str] = None) -> None:
-        console.print(Panel(Text(pyfiglet.figlet_format("Cosmic CLI"), justify="center", style="bold magenta"), border_style="blue"))
-        console.print("[bold green]Built for xAI – Empowering humanity with cosmic AI![/bold green]\n")
+        console.print(
+            Panel(
+                Text(
+                    pyfiglet.figlet_format("Cosmic CLI", font="small"),
+                    justify="center",
+                    style="bold magenta",
+                ),
+                border_style="blue",
+                subtitle=f"model default: {DEFAULT_MODEL}",
+            )
+        )
         super().write_usage(usage, prefix)
 
     def write_heading(self, heading: str) -> None:
@@ -163,290 +180,367 @@ class CosmicHelpFormatter(click.HelpFormatter):
     def write_text(self, text: str) -> None:
         console.print(text)
 
-    def write_dl(self, rows: List[tuple], col_max: int = 30, col_spacing: int = 2) -> None:
+    def write_dl(
+        self, rows: List[tuple], col_max: int = 30, col_spacing: int = 2
+    ) -> None:
         for term, definition in rows:
-            console.print(f"  [bold cyan]{term.ljust(col_max)}[/bold cyan] {definition}")
+            console.print(
+                f"  [bold cyan]{term.ljust(col_max)}[/bold cyan] {definition}"
+            )
+
 
 class CosmicCommand(Command):
     def get_help(self, ctx):
         formatter = CosmicHelpFormatter(width=ctx.terminal_width)
         self.format_help(ctx, formatter)
-        return formatter.getvalue().rstrip('\n')
+        return formatter.getvalue().rstrip("\n")
+
 
 class CosmicGroup(Group):
     command_class = CosmicCommand
-    group_class = type  # Allow subgroups to inherit
+    group_class = type
 
-@click.group(cls=CosmicGroup, context_settings=dict(help_option_names=['-h', '--help']))
-@click.option('--ask', type=str, help='Ask xAI a single question')
-@click.option('--analyze', type=click.Path(exists=True), help='Analyze a file')
-@click.option('--hack', type=str, help='Get AI-powered terminal hacks (productivity, fun, learn)')
-@click.option('--run-command', type=str, help='Run a terminal command')
-def cli(ask, analyze, hack, run_command):
-    """
-    Cosmic CLI: Your cosmic companion.
-    """
-    # Let click handle subcommands directly
-    pass
 
-# Rename original commands to functions
-def chat_command():
-    # Original chat command code here
-    chat_instance = cosmic_cli.initialize_chat(load_history=True)
+@click.group(
+    cls=CosmicGroup,
+    context_settings=dict(help_option_names=["-h", "--help"]),
+)
+@click.option("-v", "--verbose", is_flag=True, help="Verbose agent logs")
+@click.pass_context
+def cli(ctx: click.Context, verbose: bool) -> None:
+    """Cosmic CLI — Grok agent for the terminal. Default model: grok-4.5."""
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    set_verbose(verbose)
+
+
+def _run_stargazer(
+    directive: str,
+    *,
+    mode: str = "safe",
+    max_steps: int = 20,
+    model: str = DEFAULT_MODEL,
+    quiet: bool = False,
+    auto_verify: bool = True,
+) -> Dict[str, Any]:
+    api_key = get_api_key()
+    if not api_key:
+        sys.exit(2)
+
+    def on_update(msg: str) -> None:
+        console.print(f"[cyan]{msg}[/cyan]")
+
+    console.print(
+        f"[dim]model={model} · mode={mode} · max_steps={max_steps} · "
+        f"verify={'on' if auto_verify else 'off'} · cwd={os.getcwd()}[/dim]"
+    )
+    agent = StargazerAgent(
+        directive=directive,
+        api_key=api_key,
+        ui_callback=on_update,
+        exec_mode=mode,
+        work_dir=os.getcwd(),
+        model=model,
+        max_steps=max_steps,
+        quiet=quiet,
+        show_progress=not quiet,
+        auto_verify=auto_verify,
+    )
+    result = agent.execute()
+    status = result.get("status", "?")
+    color = {
+        "complete": "green",
+        "passed": "yellow",
+        "max_steps": "yellow",
+        "error": "red",
+    }.get(status, "white")
+    console.print(f"[{color}]status: {status}[/{color}]  [dim]session {result.get('session')}[/dim]")
+    if result.get("edited"):
+        console.print(f"[yellow]edited:[/yellow] {', '.join(result['edited'])}")
+    if result.get("results"):
+        last = result["results"][-1]
+        body = str(last.get("result", ""))
+        console.print(Panel(body[:4000], title="result", border_style=color))
+    return result
+
+
+@cli.command("do")
+@click.argument("directive")
+@click.option(
+    "--mode",
+    type=click.Choice(["safe", "interactive", "full"]),
+    default="safe",
+)
+@click.option("--max-steps", default=20, show_default=True, type=int)
+@click.option("--model", default=DEFAULT_MODEL, show_default=True)
+@click.option("-q", "--quiet", is_flag=True, help="Less streaming noise")
+@click.option(
+    "--verify/--no-verify",
+    default=True,
+    help="Auto py_compile on edited Python before FINISH",
+)
+def do_cmd(
+    directive: str, mode: str, max_steps: int, model: str, quiet: bool, verify: bool
+) -> None:
+    """Run Stargazer on a directive (primary daily command)."""
+    result = _run_stargazer(
+        directive,
+        mode=mode,
+        max_steps=max_steps,
+        model=model,
+        quiet=quiet,
+        auto_verify=verify,
+    )
+    if result.get("status") != "complete":
+        sys.exit(1)
+
+
+@cli.command("chat")
+@click.option("--model", default=DEFAULT_MODEL, show_default=True)
+def chat_cmd(model: str) -> None:
+    """Interactive chat with conversation memory."""
+    chat_instance = cosmic_cli.initialize_chat(load_history=True, model=model)
     if chat_instance is None:
         return
-
-    console.print(Panel(Text(pyfiglet.figlet_format("Cosmic CLI"), justify="center", style="bold magenta"), border_style="blue"))
-    console.print("[bold green]Welcome to Cosmic CLI! Type 'quit' or 'exit' to end the conversation. Type 'reset' to clear the conversation history.[/bold green]\n")
-
+    console.print(f"[green]Chat · {model} · quit/exit to leave, reset clears history[/green]\n")
     while True:
-        user_input = click.prompt("[bold cyan]You[/bold cyan]", type=str, prompt_suffix="> ")
-
-        if user_input.lower() in ['quit', 'exit']:
-            console.print("[bold yellow]Goodbye, cosmic traveler![/bold yellow]")
-            cosmic_cli.save_memory(chat_instance.messages)
+        user_input = click.prompt("You", type=str, prompt_suffix="> ")
+        if user_input.lower() in ("quit", "exit"):
+            cosmic_cli.save_memory(getattr(chat_instance, "messages", []))
+            console.print("[yellow]bye[/yellow]")
             break
-        elif user_input.lower() == 'reset':
-            chat_instance = cosmic_cli.initialize_chat(load_history=False) # Start fresh, don't load old history
-            cosmic_cli.save_memory([]) # Save an empty history
-            if chat_instance is not None:
-                console.print("[bold yellow]Wiping the cosmic slate clean! Ready for new adventures![/bold yellow]")
+        if user_input.lower() == "reset":
+            chat_instance = cosmic_cli.initialize_chat(load_history=False, model=model)
+            cosmic_cli.save_memory([])
+            console.print("[yellow]history cleared[/yellow]")
             continue
-
         chat_instance.append(user(user_input))
-
         try:
             response = chat_instance.sample()
-            cosmic_prefix = random.choice(COSMIC_QUOTES)
-            console.print(f"[bold blue]{cosmic_prefix}[/bold blue] [white]{response.content}[/white]")
+            prefix = random.choice(COSMIC_QUOTES)
+            console.print(f"[blue]{prefix}[/blue] {response.content}")
             chat_instance.append(assistant(response.content))
-            cosmic_cli.save_memory(chat_instance.messages)
+            cosmic_cli.save_memory(getattr(chat_instance, "messages", []))
         except Exception as e:
-            console.print(f"[bold red]An error occurred during response generation: {e}[/bold red]")
-            # If an error occurs, remove the last user message to avoid sending bad context
-            if chat_instance and chat_instance.messages:
-                chat_instance.messages.pop()
+            console.print(f"[red]{e}[/red]")
 
-def ask_command(prompt: str):
-    # Original ask command code here
-    chat_instance = cosmic_cli.initialize_chat(load_history=False)
+
+@cli.command("ask")
+@click.argument("prompt")
+@click.option("--model", default=DEFAULT_MODEL, show_default=True)
+def ask_cmd(prompt: str, model: str) -> None:
+    """One-shot question (no agent loop)."""
+    chat_instance = cosmic_cli.initialize_chat(load_history=False, model=model)
     if chat_instance is None:
         return
-
     try:
         chat_instance.append(user(prompt))
         response = chat_instance.sample()
-        cosmic_prefix = random.choice(COSMIC_QUOTES)
-        console.print(f"[bold blue]{cosmic_prefix}[/bold blue] [white]{response.content}[/white]")
+        console.print(response.content)
         cosmic_cli.append_to_memory("user", prompt)
         cosmic_cli.append_to_memory("assistant", response.content)
     except Exception as e:
-        console.print(f"[bold red]An error occurred: {e}[/bold red]")
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
 
-def analyze_command(file_path: str):
-    chat_instance = cosmic_cli.initialize_chat(load_history=False)
+
+@cli.command("analyze")
+@click.argument("file_path", type=click.Path(exists=True))
+@click.option("--model", default=DEFAULT_MODEL, show_default=True)
+def analyze_cmd(file_path: str, model: str) -> None:
+    """Analyze a text file with Grok."""
+    chat_instance = cosmic_cli.initialize_chat(load_history=False, model=model)
     if chat_instance is None:
         return
-
     try:
-        with open(file_path, 'r') as f:
-            content = f.read()
-        
-        console.print(f"[bold yellow]Analyzing file: {file_path}[/bold yellow]")
-        
-        analysis_prompt = f"Please analyze the following content from a file and provide insights or suggestions:\n\n```\n{content}\n```"
-        
+        content = Path(file_path).read_text(encoding="utf-8")
+        analysis_prompt = (
+            f"Analyze this file ({file_path}). Be concrete.\n\n```\n{content}\n```"
+        )
         chat_instance.append(user(analysis_prompt))
-        
-        with Progress() as progress:
-            task = progress.add_task("[cyan]Analyzing...", total=100)
-            for _ in range(100):
-                time.sleep(0.01)  # Simulate progress
-                progress.update(task, advance=1)
-        
         response = chat_instance.sample()
-        
-        cosmic_prefix = random.choice(COSMIC_QUOTES)
-        console.print(f"[bold blue]{cosmic_prefix}[/bold blue] [white]{response.content}[/white]")
-
-        cosmic_cli.append_to_memory("user", analysis_prompt)
-        cosmic_cli.append_to_memory("assistant", response.content)
-
+        console.print(response.content)
     except UnicodeDecodeError:
-        console.print(f"[bold red]Error: Could not decode file {file_path}. It might be a binary file. Cosmic CLI currently supports text-based files for analysis.[/bold red]")
+        console.print(f"[red]binary/non-utf8: {file_path}[/red]")
+        sys.exit(1)
     except Exception as e:
-        console.print(f"[bold red]An error occurred during file analysis: {e}[/bold red]")
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
 
-def hack_command(mode: str):
-    chat_instance = cosmic_cli.initialize_chat(load_history=False)
-    if chat_instance is None:
+
+@cli.command("run")
+@click.argument("command_to_run")
+def run_cmd(command_to_run: str) -> None:
+    """Run a shell command after confirmation."""
+    console.print(f"[red]run:[/red] {command_to_run}")
+    if not click.confirm("Proceed?", default=False):
+        console.print("[yellow]cancelled[/yellow]")
         return
-
-    if mode.lower() == "productivity":
-        hack_prompt = "Suggest a simple terminal command for a 25-minute Pomodoro timer with a 5-minute break. Provide only the command, no extra text."
-    elif mode.lower() == "fun":
-        hack_prompt = "Suggest a fun, simple terminal command or ASCII art generator. Provide only the command, no extra text."
-    elif mode.lower() == "learn":
-        hack_prompt = "Suggest a terminal command to learn about a random Linux command. Provide only the command, no extra text."
-    else:
-        console.print("[bold red]Invalid hack mode. Choose from: productivity, fun, learn.[/bold red]")
-        return
-
-    console.print(f"[bold yellow]xAI is thinking of a {mode} hack...[/bold yellow]")
-    chat_instance.append(user(hack_prompt))
-
-    try:
-        with Progress() as progress:
-            task = progress.add_task("[cyan]Generating hack...", total=100)
-            for _ in range(100):
-                time.sleep(0.01)  # Simulate progress
-                progress.update(task, advance=1)
-        
-        response = chat_instance.sample()
-        suggested_command = response.content.strip()
-        console.print(f"[bold green]xAI suggests:[/bold green] [yellow]{suggested_command}[/yellow]")
-        console.print("[bold yellow]To run this command, use: cosmic-cli --run-command \"{suggested_command}\"[/bold yellow]")
-        cosmic_cli.append_to_memory("user", hack_prompt)
-        cosmic_cli.append_to_memory("assistant", suggested_command)
-    except Exception as e:
-        console.print(f"[bold red]An error occurred while generating hack: {e}[/bold red]")
-
-def run_command_command(command_to_run: str):
-    # Original run_command code here
-    console.print(f"[bold red]WARNING: Executing command:[/bold red] [yellow]{command_to_run}[/yellow]")
-    confirm = click.confirm("Are you sure you want to run this command?", default=False)
-    if confirm:
-        try:
-            result = subprocess.run(command_to_run, shell=True, capture_output=True, text=True, check=True)
-            console.print("[bold green]Command Output:[/bold green]")
-            console.print(result.stdout)
-            if result.stderr:
-                console.print("[bold yellow]Command Errors:[/bold yellow]")
-                console.print(result.stderr)
-        except subprocess.CalledProcessError as e:
-            console.print(f"[bold red]Command failed with error code {e.returncode}:[/bold red]")
-            console.print(e.stderr)
-        except Exception as e:
-            console.print(f"[bold red]An unexpected error occurred while running command: {e}[/bold red]")
-    else:
-        console.print("[bold yellow]Command execution cancelled.[/bold yellow]")
-
-@cli.command()
-@click.argument('tasks', nargs=-1)
-def workflow(tasks):
-    """
-    Chain tasks in a workflow using StargazerAgent.
-    """
-    if not tasks:
-        console.print("[bold red]Usage: cosmic-cli workflow <task1> <arg1> <task2> <arg2> ...[/bold red]")
-        return
-
-    # Formulate directive from tasks
-    directive_parts = []
-    for i in range(0, len(tasks), 2):
-        task = tasks[i]
-        arg = tasks[i+1] if i+1 < len(tasks) else ''
-        if task == 'analyze':
-            directive_parts.append(f"Analyze file {arg}")
-        elif task == 'hack':
-            directive_parts.append(f"Generate hack in mode {arg}")
-        else:
-            console.print(f"[bold red]Unknown task: {task}[/bold red]")
-            return
-
-    directive = " and ".join(directive_parts) + "."
-
-    # Invoke Stargazer
-    def on_update(msg):
-        console.print(f"[cyan]{msg}[/cyan]")
-
-    api_key = get_api_key()
-    if not api_key:
-        return
-
-    agent = StargazerAgent(
-        directive,
-        api_key,
-        on_update,
-        work_dir=os.getcwd()
+    result = subprocess.run(
+        command_to_run, shell=True, capture_output=True, text=True, check=False
     )
-    result = agent.execute()
-    console.print(f"[green]Workflow completed via Stargazer: {result}[/green]")
+    if result.stdout:
+        console.print(result.stdout, end="")
+    if result.stderr:
+        console.print(f"[yellow]{result.stderr}[/yellow]", end="")
+    console.print(f"[dim]exit {result.returncode}[/dim]")
+    sys.exit(result.returncode)
+
+
+@cli.command("doctor")
+def doctor_cmd() -> None:
+    """Check API key, model access, and local tooling."""
+    console.print(f"[bold]Cosmic doctor[/bold] · default model [cyan]{DEFAULT_MODEL}[/cyan]")
+    key = get_api_key(prompt=False)
+    if not key:
+        console.print("[red]✗[/red] XAI_API_KEY not set (.env or env)")
+    else:
+        console.print(f"[green]✓[/green] API key present ({key[:7]}… len={len(key)})")
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(
+                "https://api.x.ai/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode())
+            ids = sorted(m["id"] for m in data.get("data", []))
+            console.print(f"[green]✓[/green] models API OK ({len(ids)} models)")
+            if DEFAULT_MODEL in ids:
+                console.print(f"[green]✓[/green] default model available: {DEFAULT_MODEL}")
+            else:
+                console.print(
+                    f"[yellow]![/yellow] default {DEFAULT_MODEL} not in list: {ids}"
+                )
+            # show chat-ish models
+            chat_models = [i for i in ids if not i.startswith("grok-imagine")]
+            console.print(f"  chat models: {', '.join(chat_models)}")
+        except Exception as e:
+            console.print(f"[red]✗[/red] models API failed: {e}")
+
+    # ollama
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(f"{ollama_url}/api/tags", timeout=3) as resp:
+            tags = json.loads(resp.read().decode())
+        names = [m.get("name") for m in tags.get("models", [])]
+        console.print(f"[green]✓[/green] Ollama @ {ollama_url}: {', '.join(names) or '(no models)'}")
+    except Exception as e:
+        console.print(f"[dim]·[/dim] Ollama not reachable ({ollama_url}): {e}")
+
+    console.print(f"  cwd: {os.getcwd()}")
+    console.print(f"  echo file: {Path.home() / '.cosmic_echo.jsonl'}")
+    console.print(f"  sessions: {SESSION_DIR}")
+    console.print(f"  chat memory: {MEMORY_FILE}")
+    console.print("\n[bold]What sets this apart[/bold]")
+    for line in DIFFERENTIATORS.strip().splitlines():
+        if line.strip():
+            console.print(f"  {line}")
+
 
 @click.group()
-def stargazer():
-    """Cosmic Stargazer agents for directive execution."""
+def stargazer() -> None:
+    """Stargazer multi-step agents."""
     pass
 
-@stargazer.command()
-@click.argument('directive')
-def deploy(directive):
-    def on_update(msg):
-        console.print(f"[cyan]{msg}[/cyan]")
 
-    api_key = get_api_key()
-    if not api_key:
-        return
-
-    agent = StargazerAgent(
+@stargazer.command("deploy")
+@click.argument("directive")
+@click.option(
+    "--mode",
+    type=click.Choice(["safe", "interactive", "full"]),
+    default="safe",
+)
+@click.option("--max-steps", default=20, show_default=True, type=int)
+@click.option("--model", default=DEFAULT_MODEL, show_default=True)
+@click.option("-q", "--quiet", is_flag=True)
+@click.option("--verify/--no-verify", default=True)
+def deploy(
+    directive: str, mode: str, max_steps: int, model: str, quiet: bool, verify: bool
+) -> None:
+    """Deploy Grok Stargazer (same as `cosmic-cli do`)."""
+    result = _run_stargazer(
         directive,
-        api_key,
-        on_update,
-        work_dir=os.getcwd()
+        mode=mode,
+        max_steps=max_steps,
+        model=model,
+        quiet=quiet,
+        auto_verify=verify,
     )
-    result = agent.execute()
-    console.print(f"[green]Stargazer deployed for '{directive}'—engaging warp drive![/green]")
+    if result.get("status") != "complete":
+        sys.exit(1)
 
-# Add Ollama stargazer command
-@stargazer.command()
-@click.argument('directive')
-@click.option('--ollama-url', default='http://localhost:11434', help='Ollama server URL (2026 default: localhost; was 100.72.59.69)')
-@click.option('--model', default='qwen3:14b', help='Ollama model to use')
-@click.option('--consciousness/--no-consciousness', default=True, help='Enable consciousness monitoring')
-def ollama(directive, ollama_url, model, consciousness):
-    """Deploy with Ollama-powered consciousness-aware agent"""
-    def on_update(msg):
+
+@stargazer.command("ollama")
+@click.argument("directive")
+@click.option("--ollama-url", default=None)
+@click.option("--model", default="gemma4:e2b", show_default=True)
+@click.option("--consciousness/--no-consciousness", default=False)
+def ollama_cmd(directive, ollama_url, model, consciousness) -> None:
+    """Local Ollama Stargazer (no xAI credits)."""
+    if not ollama_url:
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+    def on_update(msg: str) -> None:
         console.print(f"[cyan]{msg}[/cyan]")
 
-    console.print(f"[bold magenta]🌌 Deploying OllamaStargazer[/bold magenta]")
-    console.print(f"[dim]Model: {model} @ {ollama_url}[/dim]")
-    console.print(f"[dim]Consciousness monitoring: {'enabled' if consciousness else 'disabled'}[/dim]\n")
-
+    console.print(f"[magenta]ollama · {model} @ {ollama_url}[/magenta]")
     agent = OllamaStargazerAgent(
         directive=directive,
         ollama_url=ollama_url,
         model=model,
         ui_callback=on_update,
         work_dir=os.getcwd(),
-        enable_consciousness=consciousness
+        enable_consciousness=consciousness,
     )
+    ok = agent.execute()
+    console.print("[green]done[/green]" if ok else "[yellow]incomplete[/yellow]")
+    if not ok:
+        sys.exit(1)
 
-    result = agent.execute()
 
-    if consciousness:
-        report = agent.get_consciousness_report()
-        console.print(f"\n[bold cyan]🧠 Consciousness Report:[/bold cyan]")
-        console.print(f"  Level: [bold]{report['level']}[/bold]")
-        console.print(f"  Score: {report['score']:.3f}")
-        if report.get('patterns'):
-            console.print(f"  Patterns detected: {len(report['patterns'])}")
-
-    console.print(f"\n[green]{'✅' if result else '⚠️'} OllamaStargazer mission {'accomplished' if result else 'incomplete'}![/green]")
-
-# Add to main CLI
 cli.add_command(stargazer)
 
 
 @cli.command()
-def tui():
-    """Launch the modern Textual TUI (DirectivesUI for directives/agents)."""
-    # 2026: dedicated tui subcommand
-    console.print("[bold cyan]🚀 Launching Cosmic TUI...[/bold cyan]")
+def tui() -> None:
+    """Launch Textual TUI."""
     DirectivesUI().run()
 
 
-def main():
-    DirectivesUI().run()
+@cli.command()
+@click.argument("tasks", nargs=-1)
+@click.option("--model", default=DEFAULT_MODEL, show_default=True)
+def workflow(tasks, model: str) -> None:
+    """Legacy task pairs: analyze <file> [hack <mode>] …"""
+    if not tasks:
+        console.print("[red]usage: cosmic-cli workflow analyze <file> …[/red]")
+        sys.exit(2)
+    parts = []
+    i = 0
+    while i < len(tasks):
+        task = tasks[i]
+        arg = tasks[i + 1] if i + 1 < len(tasks) else ""
+        if task == "analyze":
+            parts.append(f"Analyze file {arg}")
+            i += 2
+        elif task == "hack":
+            parts.append(f"Generate a terminal hack in mode {arg}")
+            i += 2
+        else:
+            console.print(f"[red]unknown task: {task}[/red]")
+            sys.exit(2)
+    result = _run_stargazer(" and ".join(parts) + ".", model=model)
+    if result.get("status") != "complete":
+        sys.exit(1)
+
+
+def main() -> None:
+    cli()
+
 
 if __name__ == "__main__":
-    main()
+    cli()

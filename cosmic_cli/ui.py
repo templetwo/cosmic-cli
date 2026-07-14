@@ -132,9 +132,6 @@ class DirectivesUI(App):
         directive = input_widget.value.strip()
         if not directive:
             return
-        # Auto-format if it looks like a workflow
-        if " " in directive and not directive.startswith("/"):
-            directive = f"workflow {directive}"
         self.add_directive(directive)
         input_widget.value = ""
 
@@ -176,16 +173,8 @@ class DirectivesUI(App):
             table = self.query_one("#directives", DataTable)
             table.clear()
             for dir, ag in self.agents.items():
-                level = (
-                    ag.consciousness_monitor.last_consciousness_level.value
-                    if hasattr(ag, "consciousness_monitor")
-                    else "N/A"
-                )
-                score = (
-                    ag.consciousness_metrics.get_overall_score()
-                    if hasattr(ag, "consciousness_metrics")
-                    else 0.0
-                )
+                level = getattr(ag, "model", "N/A")
+                score = float(getattr(ag, "steps_taken", 0) or 0)
                 log_action = (
                     f"Show Logs ({len(ag.logs)})"
                     if not self.show_logs.get(dir)
