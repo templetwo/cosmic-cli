@@ -28,3 +28,33 @@ def test_call_when_unavailable():
     with patch.object(helix_bridge, "available", return_value=False):
         r = helix_bridge.call("health")
     assert r["ok"] is False
+
+
+def test_parse_witness_pause_and_witness():
+    pause = helix_bridge.parse_witness(
+        {
+            "ok": True,
+            "result": {
+                "classification": "PAUSE",
+                "blocked": True,
+                "pending_token": "abc123",
+                "reason": "credential",
+            },
+        }
+    )
+    assert pause["classification"] == "PAUSE"
+    assert pause["blocked"] is True
+    assert pause["pending_token"] == "abc123"
+
+    wit = helix_bridge.parse_witness(
+        {
+            "ok": True,
+            "result": {"classification": "WITNESS", "blocked": True},
+        }
+    )
+    assert wit["blocked"] is True
+
+    open_ = helix_bridge.parse_witness(
+        {"ok": True, "result": {"classification": "OPEN", "blocked": False}}
+    )
+    assert open_["blocked"] is False

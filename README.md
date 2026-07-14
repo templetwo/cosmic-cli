@@ -57,6 +57,11 @@ cosmic-cli helix recall "path footgun"
 On every `do`, Cosmic boots Helix memory, sets a session goal, witnesses
 shell via compass, and records mission receipts into the chronicle.
 
+**Compass (honest):** WITNESS = hard block. PAUSE = soft block with a single-use
+token (`cosmic-cli helix confirm <token>`, then retry). OPEN = allow.
+Do not read older "compass protects both ✓" as full PAUSE parity until this
+table matches your installed adapter.
+
 ## Daily path
 
 ```bash

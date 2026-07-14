@@ -937,15 +937,30 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         blocked = check_shell(cmd, exec_mode=self.exec_mode)
         if blocked:
             return blocked
-        # Compass witness via Helix (non-blocking except WITNESS hard deny if returned)
+        # Compass witness via Helix — enforce WITNESS *and* PAUSE (not log-only).
+        # PAUSE requires: cosmic-cli helix confirm <token> then retry the action.
         if self.use_helix and helix_bridge is not None and self.exec_mode != "full":
             try:
                 w = helix_bridge.witness(
                     f"SHELL: {cmd}", session_id=self.session_id
                 )
-                inner = (w.get("result") or {}) if w.get("ok") else {}
-                if isinstance(inner, dict) and inner.get("classification") == "WITNESS":
-                    return f"[BLOCKED] Helix compass WITNESS: {inner.get('reason') or 'denied'}"
+                decision = helix_bridge.parse_witness(w)
+                cls = decision.get("classification") or "OPEN"
+                if cls == "WITNESS" or (
+                    decision.get("blocked") and cls == "WITNESS"
+                ):
+                    return (
+                        f"[BLOCKED] Helix compass WITNESS: "
+                        f"{decision.get('reason') or 'denied'}"
+                    )
+                if cls == "PAUSE" and decision.get("blocked"):
+                    tok = decision.get("pending_token") or "?"
+                    return (
+                        f"[BLOCKED] Helix compass PAUSE: "
+                        f"{decision.get('reason') or 'needs confirmation'}. "
+                        f"Approve: cosmic-cli helix confirm {tok} "
+                        f"then re-run the SHELL action (token is single-use)."
+                    )
             except Exception as e:  # pragma: no cover
                 logger.debug("helix witness skip: %s", e)
         if self.exec_mode == "interactive":

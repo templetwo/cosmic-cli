@@ -1,0 +1,58 @@
+# Cosmic CLI — Standing Horizon
+
+**Locked:** 2026-07-14  
+**Partners:** Grok Build (builder) · Claude Code (support)
+
+## Horizon (A+B)
+
+**Grok Build is the cockpit. Cosmic is the avionics.**
+
+Cosmic is **not** another agent TUI. Grok Build occupies that seat.
+
+Cosmic is the **Temple runtime**:
+- Mission protocol (`do` / Stargazer tool loop)
+- **T2Helix** local chronicle as memory + task substrate (shared with Claude seats)
+- Receipts, review seat, project law (`COSMIC.md`)
+- Compass-aware shell (WITNESS hard-deny, PAUSE token-gate)
+
+Not: prettier TUI than Grok Build.  
+Not: direct Sovereign Stack connector (Helix is the joint).  
+Yes: headless / scriptable Temple agent the cockpit can call.
+
+## Compass honesty (load-bearing)
+
+Until 2026-07-14, non-hook seats treated **PAUSE as OPEN** in `grok-adapter.js`
+(logged, not enforced). Same failure shape as a `safe` flag that is never read.
+
+**Current contract (Cosmic + adapter):**
+
+| Class | Behavior |
+|-------|----------|
+| **WITNESS** | Hard block. Does not execute. |
+| **PAUSE** | Soft block. Mints single-use token. Approve with `cosmic-cli helix confirm <token>`, then retry. |
+| **OPEN** | Proceed. |
+
+If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
+
+## Memory
+
+- Substrate: T2Helix SQLite (`T2HELIX_DATA_DIR`, default Claude plugin data dir when present)
+- Bridge: `scripts/helix_rpc.js` + `cosmic_cli/helix_bridge.py`
+- Mission FINISH → `helix.record`; PASS → `open_thread`; MEMORY → `helix.recall`
+
+## Daily path
+
+```bash
+export T2HELIX_ROOT=~/t2helix
+cosmic-cli doctor
+cosmic-cli helix status
+cosmic-cli do '…'
+cosmic-cli helix confirm <token>   # after PAUSE
+cosmic-cli do --review '…'
+```
+
+## Non-goals
+
+- Competing with Grok Build / Claude Code as a fullscreen TUI
+- Safe-mode allowlist deep work (Anthony: not worried)
+- Lying about gates that only log

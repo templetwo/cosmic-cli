@@ -112,6 +112,21 @@ async function main() {
           tags: req.tags || ['source:cosmic-cli'],
         });
         break;
+      case 'confirm_pending': {
+        const token = req.token;
+        if (!token) {
+          result = { ok: false, error: 'token required' };
+          break;
+        }
+        result = chronicle.approveConfirmation({ token });
+        break;
+      }
+      case 'list_pending':
+        result = chronicle.listPendingConfirmations({
+          session_id: req.session_id,
+          limit: req.limit || 20,
+        });
+        break;
       case 'set_goal':
         result = chronicle.setGoal({
           session_id: req.session_id || chronicle.readCurrentSession() || 'cosmic-cli',

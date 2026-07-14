@@ -686,7 +686,16 @@ def doctor_cmd() -> None:
 @click.argument(
     "action",
     type=click.Choice(
-        ["status", "boot", "recall", "state", "thread", "record"],
+        [
+            "status",
+            "boot",
+            "recall",
+            "state",
+            "thread",
+            "record",
+            "confirm",
+            "pending",
+        ],
         case_sensitive=False,
     ),
     default="status",
@@ -694,12 +703,20 @@ def doctor_cmd() -> None:
 @click.argument("query", required=False, default="")
 @click.option("--domain", default="cosmic-cli", show_default=True)
 def helix_cmd(action: str, query: str, domain: str) -> None:
-    """T2Helix local memory substrate (shared chronicle with Claude)."""
+    """T2Helix local memory + compass substrate (shared chronicle with Claude).
+
+    Compass honesty: WITNESS hard-denies. PAUSE soft-denies with a token —
+    approve via `helix confirm <token>`, then retry the action. OPEN proceeds.
+    """
     action = action.lower()
     if action == "status":
         console.print(f"[dim]T2HELIX_ROOT[/dim] {helix_bridge.resolve_t2helix_root()}")
         console.print(f"[dim]T2HELIX_DATA_DIR[/dim] {helix_bridge.resolve_data_dir()}")
         console.print(f"[dim]available[/dim] {helix_bridge.available()}")
+        console.print(
+            "[dim]compass[/dim] WITNESS=block · PAUSE=token gate · OPEN=allow "
+            "(PAUSE enforced in Cosmic + grok-adapter as of 2026-07-14)"
+        )
         h = helix_bridge.health()
         console.print(h)
         return
@@ -735,6 +752,22 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
             console.print("[red]usage: cosmic-cli helix record 'insight text'[/red]")
             sys.exit(2)
         r = helix_bridge.record(query, domain=domain)
+        console.print(r)
+        return
+    if action == "confirm":
+        if not query:
+            console.print("[red]usage: cosmic-cli helix confirm <token>[/red]")
+            sys.exit(2)
+        r = helix_bridge.confirm_pending(query.strip())
+        console.print(r)
+        if r.get("ok") and (r.get("result") or {}).get("ok"):
+            console.print(
+                "[green]approved[/green] — re-run the blocked SHELL/action once "
+                "(token is single-use)."
+            )
+        return
+    if action == "pending":
+        r = helix_bridge.list_pending(limit=20)
         console.print(r)
         return
 

@@ -142,7 +142,54 @@ def record(
 
 
 def witness(action: str, *, session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run compass classify for an action.
+
+    Honest contract (2026-07-14):
+    - WITNESS → blocked (hard deny)
+    - PAUSE → blocked until confirm_pending(token), then retry
+    - OPEN → allowed
+
+    Classification is on the *inner* result of grokWitness (rpc wraps as result=...).
+    """
     return call("witness", action=action, session_id=session_id)
+
+
+def confirm_pending(token: str) -> Dict[str, Any]:
+    return call("confirm_pending", token=token)
+
+
+def list_pending(session_id: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+    return call("list_pending", session_id=session_id, limit=limit)
+
+
+def parse_witness(rpc_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize rpc envelope → classification / blocked / token."""
+    if not rpc_result.get("ok"):
+        return {
+            "classification": "OPEN",
+            "blocked": False,
+            "error": rpc_result.get("error"),
+            "raw": rpc_result,
+        }
+    inner = rpc_result.get("result") or {}
+    if not isinstance(inner, dict):
+        return {"classification": "OPEN", "blocked": False, "raw": rpc_result}
+    cls = (inner.get("classification") or "OPEN").upper()
+    blocked = bool(inner.get("blocked")) or cls in ("WITNESS", "PAUSE")
+    # After adapter fix, OPEN after consume has blocked=False
+    if cls == "OPEN":
+        blocked = False
+    return {
+        "classification": cls,
+        "blocked": blocked,
+        "reason": inner.get("reason"),
+        "pending_token": inner.get("pending_token"),
+        "expires_at": inner.get("expires_at"),
+        "action_summary": inner.get("actionSummary") or inner.get("action_summary"),
+        "session_id": inner.get("session_id"),
+        "note": inner.get("note"),
+        "raw": inner,
+    }
 
 
 def set_goal(goal: str, *, session_id: Optional[str] = None, why: str = "cosmic-cli") -> Dict[str, Any]:
