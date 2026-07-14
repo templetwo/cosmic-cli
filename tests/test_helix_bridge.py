@@ -30,6 +30,43 @@ def test_call_when_unavailable():
     assert r["ok"] is False
 
 
+def test_blocked_shell_stops_without_thrash():
+    """PAUSE block must surface to caller, not thrash-retry (Claude #2)."""
+    from cosmic_cli.agents import StargazerAgent
+
+    agent = StargazerAgent(
+        "run secret shell",
+        api_key="test",
+        quiet=True,
+        use_helix=False,
+        max_steps=6,
+        show_progress=False,
+    )
+    # Force model to keep emitting the same SHELL
+    steps = [
+        'SHELL: export OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789 && echo hi',
+        'SHELL: export OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789 && echo hi',
+        'SHELL: export OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789 && echo hi',
+    ]
+    # Without helix, shell_guard may not PAUSE — simulate BLOCKED output
+    with patch.object(
+        agent, "_ask_grok_for_next_step", side_effect=steps
+    ), patch.object(
+        agent,
+        "_execute_step",
+        return_value=(
+            "[BLOCKED] Helix compass PAUSE: test. "
+            "Approve: cosmic-cli helix confirm deadbeef then re-run."
+        ),
+    ):
+        result = agent.execute()
+    assert result["status"] == "blocked"
+    assert "PAUSE" in result.get("block_message", "")
+    # Only one execute of the blocked step, not three thrash retries
+    # (one next_step call before return)
+    assert result["steps_taken"] == 1
+
+
 def test_witness_sends_structured_bash():
     """Shell must not go as a plain string (Grok tag skips Bash rules)."""
     captured = {}

@@ -36,6 +36,11 @@ Until 2026-07-14, non-hook seats treated **PAUSE as OPEN** in `grok-adapter.js`
 `{tool_name: "Bash", tool_input: {command: cmd}}`.  
 Plain `"SHELL: …"` strings are tagged `Grok` in the adapter and **skip every Bash-scoped rule** — enforcement code never fires. Fixed in Cosmic: always Bash-structured.
 
+**Override loop (Claude experiment #2):** Approvals key by `(session_id, action_summary)`.
+Cosmic reuses Helix/Claude seat session id (not a fresh mint per `do`) so
+`helix confirm` then re-run can consume the approval. On PAUSE/WITNESS block,
+Stargazer **stops and surfaces the token** (no thrash-retry). Exit code **4** = blocked.
+
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
 ## Memory

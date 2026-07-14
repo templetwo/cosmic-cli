@@ -173,6 +173,11 @@ async function main() {
           session: chronicle.readCurrentSession && chronicle.readCurrentSession(),
         };
         break;
+      case 'current_session':
+        result = {
+          session_id: chronicle.readCurrentSession && chronicle.readCurrentSession(),
+        };
+        break;
       default:
         result = { ok: false, error: 'unknown op: ' + op };
         process.exitCode = 2;

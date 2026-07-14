@@ -126,10 +126,22 @@ class StargazerAgent:
         self._discovery_streak: int = 0
         self.steps_taken: int = 0
         self.warnings: List[str] = []
-        self.session_id = session_id or datetime.now(timezone.utc).strftime(
+        # Prefer explicit id → Helix/Claude seat session → mint mission id.
+        # Approvals are keyed by (session_id, action_summary); a new mint every
+        # `do` strands confirmed tokens across re-runs (PAUSE experiment #2).
+        resolved = session_id
+        if not resolved and self.use_helix and helix_bridge is not None:
+            try:
+                resolved = helix_bridge.current_session_id()
+            except Exception:
+                resolved = None
+        self.session_id = resolved or datetime.now(timezone.utc).strftime(
             "%Y%m%dT%H%M%SZ"
         )
-        self.session_path = SESSION_DIR / f"{self.session_id}.jsonl"
+        # Mission log file: keep a unique path even when reusing Helix session
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.mission_id = f"{self.session_id}__{stamp}" if resolved else self.session_id
+        self.session_path = SESSION_DIR / f"{self.mission_id}.jsonl"
         SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── logging / memory ──────────────────────────────────────────
@@ -868,6 +880,21 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     # hard-fail signals that should steer the model
                     if isinstance(output, str) and output.startswith("[Error]"):
                         self._log(f"  ! {output[:160]}")
+                    # Compass/soft-block: hand up to cockpit, do NOT thrash-retry.
+                    # PAUSE/WITNESS already blocked the shell; spinning mints
+                    # multiple tokens and strands the first approval.
+                    if isinstance(output, str) and output.startswith("[BLOCKED]"):
+                        self._log(f"blocked · surfacing to caller (no retry)")
+                        final_result["status"] = "blocked"
+                        final_result["block_message"] = output
+                        self.status = "blocked"
+                        # Also stamp as FINISH so callers see the receipt text
+                        final_result["results"].append(
+                            {"step": "FINISH", "result": output}
+                        )
+                        if progress is not None and task is not None:
+                            progress.update(task, completed=self.max_steps)
+                        return
                 except Exception as e:
                     self._recover_from_failure(next_step, e)
                     self.status = "error"

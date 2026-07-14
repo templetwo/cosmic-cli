@@ -255,6 +255,7 @@ def _run_stargazer(
     quiet: bool = False,
     auto_verify: bool = True,
     use_helix: bool = True,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     api_key = get_api_key()
     if not api_key:
@@ -264,6 +265,8 @@ def _run_stargazer(
         # dim progress, bright errors
         if msg.startswith("[Error]") or msg.startswith("  · [Error]"):
             console.print(f"[red]{msg}[/red]")
+        elif msg.startswith("[BLOCKED]") or "blocked ·" in msg:
+            console.print(f"[bold red]{msg}[/bold red]")
         elif msg.startswith("→"):
             console.print(f"[bold cyan]{msg}[/bold cyan]")
         elif msg.startswith("steer"):
@@ -272,6 +275,8 @@ def _run_stargazer(
             console.print(f"[dim]{msg}[/dim]")
 
     helix_ctx = ""
+    # Stable seat session for compass approvals (survives re-run after confirm)
+    seat_session = session_id or helix_bridge.current_session_id() if use_helix else session_id
     notes = helix_bridge.load_project_notes(Path.cwd())
     if notes:
         helix_ctx = notes + "\n"
@@ -283,8 +288,17 @@ def _run_stargazer(
             console.print(
                 f"[dim]helix · {helix_ctx.splitlines()[0] if helix_ctx else 'booted'}[/dim]"
             )
-            helix_bridge.set_goal(directive[:500], why="cosmic-cli do")
-            st = helix_bridge.get_state()
+            # Prefer seat session from boot if we don't have one yet
+            if not seat_session:
+                inner = boot.get("result") or {}
+                if isinstance(inner, dict) and inner.get("sessionId"):
+                    seat_session = str(inner["sessionId"])
+            helix_bridge.set_goal(
+                directive[:500],
+                why="cosmic-cli do",
+                session_id=seat_session,
+            )
+            st = helix_bridge.get_state(seat_session)
             state_txt = helix_bridge.format_state_context(st)
             if state_txt:
                 helix_ctx += "\n" + state_txt
@@ -300,7 +314,8 @@ def _run_stargazer(
         )
 
     console.print(
-        f"[dim]{model} · {mode} · ≤{max_steps} steps · cwd={os.getcwd()}[/dim]"
+        f"[dim]{model} · {mode} · ≤{max_steps} steps · cwd={os.getcwd()}"
+        f"{f' · seat={seat_session[:12]}…' if seat_session else ''}[/dim]"
     )
     agent = StargazerAgent(
         directive=directive,
@@ -315,6 +330,7 @@ def _run_stargazer(
         auto_verify=auto_verify,
         use_helix=use_helix,
         helix_context=helix_ctx,
+        session_id=seat_session,
     )
     result = agent.execute()
     status = result.get("status", "?")
@@ -323,11 +339,14 @@ def _run_stargazer(
         "passed": "yellow",
         "max_steps": "yellow",
         "error": "red",
+        "blocked": "red",
     }.get(status, "white")
     console.print(
         f"[{color}]{status}[/{color}]  "
         f"[dim]session {result.get('session')} · {result.get('steps_taken', '?')} steps[/dim]"
     )
+    if status == "blocked" and result.get("block_message"):
+        console.print(Panel(result["block_message"][:2000], title="blocked", border_style="red"))
     # steps_taken may only be on agent; mirror from results len if missing
     edited = list(dict.fromkeys(result.get("edited") or []))
     result["edited"] = edited
@@ -335,7 +354,7 @@ def _run_stargazer(
         console.print(f"[yellow]edited[/yellow] {', '.join(edited)}")
     for w in result.get("warnings") or []:
         console.print(f"[red]warn[/red] {w}")
-    if result.get("results"):
+    if result.get("results") and status != "blocked":
         last = result["results"][-1]
         body = str(last.get("result", "")).strip()
         lines = [ln for ln in body.splitlines() if ln.strip()]
@@ -392,6 +411,14 @@ def _print_review(report: Dict[str, Any]) -> None:
     default=True,
     help="Use T2Helix for memory/goal (local SQLite; not Sovereign Stack)",
 )
+@click.option(
+    "--session",
+    default=None,
+    help=(
+        "Stable seat session id for compass approvals (default: Helix "
+        ".current_session / CLAUDE_SESSION_ID). Re-use after helix confirm."
+    ),
+)
 @click.pass_context
 def do_cmd(
     ctx: click.Context,
@@ -403,6 +430,7 @@ def do_cmd(
     verify: bool,
     review: bool,
     helix: bool,
+    session: Optional[str],
 ) -> None:
     """Run Stargazer on a directive (primary daily command)."""
     if ctx.obj and ctx.obj.get("verbose"):
@@ -415,6 +443,7 @@ def do_cmd(
         quiet=quiet,
         auto_verify=verify,
         use_helix=helix,
+        session_id=session,
     )
     if review and result.get("edited"):
         api_key = get_api_key(prompt=False)
@@ -430,6 +459,9 @@ def do_cmd(
             _print_review(report)
             if str(report.get("verdict", "")).upper() == "BLOCK":
                 sys.exit(3)
+    # blocked = compass gate handed control up (exit 4 so cockpits can branch)
+    if result.get("status") == "blocked":
+        sys.exit(4)
     if result.get("status") != "complete":
         sys.exit(1)
 

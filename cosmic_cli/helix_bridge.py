@@ -113,6 +113,32 @@ def health() -> Dict[str, Any]:
     return call("health")
 
 
+def current_session_id() -> Optional[str]:
+    """Stable Helix seat session (Claude Code / ambient .current_session)."""
+    # Prefer env if cockpit exports it
+    for key in (
+        "T2HELIX_SESSION_ID",
+        "CLAUDE_SESSION_ID",
+        "COSMIC_SESSION_ID",
+    ):
+        val = os.environ.get(key)
+        if val and val.strip():
+            return val.strip()
+    r = call("current_session")
+    if r.get("ok"):
+        inner = r.get("result") or {}
+        sid = inner.get("session_id") if isinstance(inner, dict) else None
+        if sid:
+            return str(sid)
+    # health also carries session
+    h = health()
+    if h.get("ok"):
+        inner = h.get("result") or {}
+        if isinstance(inner, dict) and inner.get("session"):
+            return str(inner["session"])
+    return None
+
+
 def boot(query: str, *, top_k: int = 6) -> Dict[str, Any]:
     return call("boot", query=query, topK=top_k)
 
