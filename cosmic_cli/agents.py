@@ -632,7 +632,18 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             return answer
 
         if upper.startswith("PASS:"):
-            return self._body_after(step, "PASS:")
+            reason = self._body_after(step, "PASS:")
+            if self.use_helix and helix_bridge is not None and reason:
+                try:
+                    helix_bridge.open_thread(
+                        reason[:500],
+                        domain="cosmic-cli",
+                        context=f"session={self.session_id} directive={self.directive[:200]}",
+                    )
+                    self._log("helix · opened thread for PASS")
+                except Exception as e:  # pragma: no cover
+                    logger.debug("helix open_thread: %s", e)
+            return reason
 
         if upper.startswith("FINISH:"):
             return self._body_after(step, "FINISH:") or "Done."
@@ -835,7 +846,12 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     return
 
                 if upper.startswith("PASS:"):
-                    reason = next_step[5:].strip()
+                    reason = self._body_after(next_step, "PASS:")
+                    # execute_step opens helix thread
+                    try:
+                        self._execute_step(next_step)
+                    except Exception:
+                        pass
                     final_result["results"].append({"step": "PASS", "result": reason})
                     final_result["status"] = "passed"
                     self.status = "passed"

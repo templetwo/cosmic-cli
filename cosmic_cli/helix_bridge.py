@@ -175,3 +175,42 @@ def format_boot_context(boot_result: Dict[str, Any], limit: int = 4) -> str:
         else:
             lines.append(f"  {str(m)[:240]}")
     return "\n".join(lines)
+
+
+def format_state_context(state_result: Dict[str, Any], limit: int = 5) -> str:
+    """Open threads + goal from get_state for agent context."""
+    if not state_result.get("ok"):
+        return ""
+    inner = state_result.get("result") or {}
+    lines: List[str] = []
+    goal = inner.get("goal") or inner.get("session_goal")
+    if isinstance(goal, dict):
+        gtext = goal.get("goal") or goal.get("text") or str(goal)
+        lines.append(f"Active goal: {str(gtext)[:200]}")
+    elif goal:
+        lines.append(f"Active goal: {str(goal)[:200]}")
+    threads = inner.get("open_threads") or inner.get("threads") or []
+    if threads:
+        lines.append("Open threads:")
+        for t in threads[:limit]:
+            if isinstance(t, dict):
+                tid = t.get("id", "?")
+                q = t.get("question") or t.get("content") or str(t)
+                lines.append(f"  #{tid}: {str(q)[:160]}")
+            else:
+                lines.append(f"  {str(t)[:160]}")
+    return "\n".join(lines)
+
+
+def load_project_notes(cwd: Optional[Path] = None) -> str:
+    """Load COSMIC.md / AGENTS.md from cwd if present."""
+    root = cwd or Path.cwd()
+    for name in ("COSMIC.md", "AGENTS.md", "CLAUDE.md"):
+        p = root / name
+        if p.is_file():
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+                return f"Project notes ({name}):\n{text[:3000]}"
+            except OSError:
+                continue
+    return ""

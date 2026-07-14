@@ -272,14 +272,27 @@ def _run_stargazer(
             console.print(f"[dim]{msg}[/dim]")
 
     helix_ctx = ""
+    notes = helix_bridge.load_project_notes(Path.cwd())
+    if notes:
+        helix_ctx = notes + "\n"
+        console.print(f"[dim]project notes · loaded from cwd[/dim]")
     if use_helix and helix_bridge.available():
         boot = helix_bridge.boot(directive, top_k=5)
-        helix_ctx = helix_bridge.format_boot_context(boot)
+        helix_ctx += helix_bridge.format_boot_context(boot)
         if boot.get("ok"):
-            console.print(f"[dim]helix · {helix_ctx.splitlines()[0] if helix_ctx else 'booted'}[/dim]")
+            console.print(
+                f"[dim]helix · {helix_ctx.splitlines()[0] if helix_ctx else 'booted'}[/dim]"
+            )
             helix_bridge.set_goal(directive[:500], why="cosmic-cli do")
+            st = helix_bridge.get_state()
+            state_txt = helix_bridge.format_state_context(st)
+            if state_txt:
+                helix_ctx += "\n" + state_txt
+                console.print(f"[dim]helix · open threads loaded[/dim]")
         else:
-            console.print(f"[yellow]helix offline:[/yellow] {boot.get('error', '?')[:120]}")
+            console.print(
+                f"[yellow]helix offline:[/yellow] {boot.get('error', '?')[:120]}"
+            )
     elif use_helix:
         console.print(
             "[dim]helix unavailable (set T2HELIX_ROOT or install "
@@ -672,12 +685,17 @@ def doctor_cmd() -> None:
 @cli.command("helix")
 @click.argument(
     "action",
-    type=click.Choice(["status", "boot", "recall", "state"]),
+    type=click.Choice(
+        ["status", "boot", "recall", "state", "thread", "record"],
+        case_sensitive=False,
+    ),
     default="status",
 )
 @click.argument("query", required=False, default="")
-def helix_cmd(action: str, query: str) -> None:
+@click.option("--domain", default="cosmic-cli", show_default=True)
+def helix_cmd(action: str, query: str, domain: str) -> None:
     """T2Helix local memory substrate (shared chronicle with Claude)."""
+    action = action.lower()
     if action == "status":
         console.print(f"[dim]T2HELIX_ROOT[/dim] {helix_bridge.resolve_t2helix_root()}")
         console.print(f"[dim]T2HELIX_DATA_DIR[/dim] {helix_bridge.resolve_data_dir()}")
@@ -697,7 +715,27 @@ def helix_cmd(action: str, query: str) -> None:
         console.print(r)
         return
     if action == "state":
-        console.print(helix_bridge.get_state())
+        r = helix_bridge.get_state()
+        console.print(r)
+        txt = helix_bridge.format_state_context(r)
+        if txt:
+            console.print(Panel(txt, title="state", border_style="cyan"))
+        return
+    if action == "thread":
+        if not query:
+            console.print(
+                "[red]usage: cosmic-cli helix thread 'unresolved question'[/red]"
+            )
+            sys.exit(2)
+        r = helix_bridge.open_thread(query, domain=domain, context="cosmic-cli helix")
+        console.print(r)
+        return
+    if action == "record":
+        if not query:
+            console.print("[red]usage: cosmic-cli helix record 'insight text'[/red]")
+            sys.exit(2)
+        r = helix_bridge.record(query, domain=domain)
+        console.print(r)
         return
 
 
