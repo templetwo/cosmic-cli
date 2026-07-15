@@ -960,37 +960,51 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         mem = self.context_memory[-1] if self.context_memory else "no context"
         return f"FINISH: Available context only.\n{mem[:800]}"
 
-    def _run_shell(self, cmd: str) -> str:
-        blocked = check_shell(cmd, exec_mode=self.exec_mode)
+    def _compass_gate(self, payload: str, *, kind: str = "SHELL") -> Optional[str]:
+        """Shared pre-execution gate for SHELL and CODE (Claude CODE-path finding).
+
+        1. Local check_shell on the payload string (catches rm -rf inside Python).
+        2. Helix witness as Bash-structured action so Bash-scoped rules +
+           credential-paste see the content (same wire as shell fix).
+
+        Returns a [BLOCKED] message or None if allowed.
+        """
+        blocked = check_shell(payload, exec_mode=self.exec_mode)
         if blocked:
-            return blocked
-        # Compass witness via Helix — enforce WITNESS *and* PAUSE.
-        # MUST send structured Bash action so tool-scoped rules match
-        # (string form is tagged Grok and skips Bash rules — PAUSE experiment).
-        if self.use_helix and helix_bridge is not None and self.exec_mode != "full":
-            try:
-                w = helix_bridge.witness(
-                    tool_name="Bash",
-                    tool_input={"command": cmd},
-                    session_id=self.session_id,
+            return blocked.replace("safe mode", f"safe mode ({kind})")
+        if not (self.use_helix and helix_bridge is not None and self.exec_mode != "full"):
+            return None
+        try:
+            # Tag as Bash so tool-scoped rules apply; payload is the full text
+            # (shell command or Python source). Credential regex scans the string.
+            w = helix_bridge.witness(
+                tool_name="Bash",
+                tool_input={"command": payload},
+                session_id=self.session_id,
+            )
+            decision = helix_bridge.parse_witness(w)
+            cls = decision.get("classification") or "OPEN"
+            if cls == "WITNESS":
+                return (
+                    f"[BLOCKED] Helix compass WITNESS ({kind}): "
+                    f"{decision.get('reason') or 'denied'}"
                 )
-                decision = helix_bridge.parse_witness(w)
-                cls = decision.get("classification") or "OPEN"
-                if cls == "WITNESS":
-                    return (
-                        f"[BLOCKED] Helix compass WITNESS: "
-                        f"{decision.get('reason') or 'denied'}"
-                    )
-                if cls == "PAUSE" and decision.get("blocked", True):
-                    tok = decision.get("pending_token") or "?"
-                    return (
-                        f"[BLOCKED] Helix compass PAUSE: "
-                        f"{decision.get('reason') or 'needs confirmation'}. "
-                        f"Approve: cosmic-cli helix confirm {tok} "
-                        f"then re-run the SHELL action (token is single-use)."
-                    )
-            except Exception as e:  # pragma: no cover
-                logger.debug("helix witness skip: %s", e)
+            if cls == "PAUSE" and decision.get("blocked", True):
+                tok = decision.get("pending_token") or "?"
+                return (
+                    f"[BLOCKED] Helix compass PAUSE ({kind}): "
+                    f"{decision.get('reason') or 'needs confirmation'}. "
+                    f"Approve: cosmic-cli helix confirm {tok} "
+                    f"then re-run the {kind} action (token is single-use)."
+                )
+        except Exception as e:  # pragma: no cover
+            logger.debug("helix witness skip (%s): %s", kind, e)
+        return None
+
+    def _run_shell(self, cmd: str) -> str:
+        gate = self._compass_gate(cmd, kind="SHELL")
+        if gate:
+            return gate
         if self.exec_mode == "interactive":
             consent = input(f"Run: {cmd} ? [y/N] ")
             if consent.lower() != "y":
@@ -1025,6 +1039,14 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             return "[TIMEOUT] command exceeded 120s"
 
     def _run_code(self, code: str) -> str:
+        # Same execution door as SHELL — do not leave CODE ungated (Claude 2026-07-14).
+        gate = self._compass_gate(code, kind="CODE")
+        if gate:
+            return gate
+        if self.exec_mode == "interactive":
+            consent = input(f"Run CODE ({len(code)} chars)? [y/N] ")
+            if consent.lower() != "y":
+                return "[SKIPPED] declined"
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".py", delete=False, encoding="utf-8"
         ) as f:
@@ -1032,13 +1054,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             fname = f.name
         try:
             result = subprocess.run(
-                ["python", fname], capture_output=True, text=True, timeout=30
+                ["python", fname],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(self.root),
             )
             output = (result.stdout or "") + (result.stderr or "")
             if result.returncode != 0:
                 output = f"[exit {result.returncode}]\n{output}"
-            self._add_to_memory(f"CODE:\n{output[:4000]}", label="code")
-            return output
+            else:
+                output = f"[exit 0]\n{output}"
+            self._add_to_memory(f"CODE:\n{redact(output[:4000])}", label="code")
+            return redact(output)
         except subprocess.TimeoutExpired:
             return "[TIMEOUT] code"
         finally:

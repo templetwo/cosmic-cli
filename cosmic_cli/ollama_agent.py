@@ -244,21 +244,30 @@ class OllamaStargazerAgent:
                     out = f"[exit {r.returncode}]\n{(r.stdout or '') + (r.stderr or '')}"
             elif upper.startswith("CODE:"):
                 code = step.split(":", 1)[1].strip()
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".py", delete=False, encoding="utf-8"
-                ) as f:
-                    f.write(code)
-                    fname = f.name
-                try:
-                    r = subprocess.run(
-                        ["python", fname], capture_output=True, text=True, timeout=30
-                    )
-                    out = (r.stdout or "") + (r.stderr or "")
-                finally:
+                # Same local gate as shell — payload scanned for rm/curl/keys
+                block = check_shell(code, exec_mode=self.exec_mode)
+                if block:
+                    out = block
+                else:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".py", delete=False, encoding="utf-8"
+                    ) as f:
+                        f.write(code)
+                        fname = f.name
                     try:
-                        os.unlink(fname)
-                    except OSError:
-                        pass
+                        r = subprocess.run(
+                            ["python", fname],
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            cwd=str(self.root),
+                        )
+                        out = f"[exit {r.returncode}]\n{(r.stdout or '') + (r.stderr or '')}"
+                    finally:
+                        try:
+                            os.unlink(fname)
+                        except OSError:
+                            pass
             elif upper.startswith("FINISH:"):
                 out = step.split(":", 1)[1].strip()
             elif upper.startswith("PASS:"):

@@ -41,6 +41,10 @@ Cosmic reuses Helix/Claude seat session id (not a fresh mint per `do`) so
 `helix confirm` then re-run can consume the approval. On PAUSE/WITNESS block,
 Stargazer **stops and surfaces the token** (no thrash-retry). Exit code **4** = blocked.
 
+**Execution coverage (Claude experiment #3):** SHELL **and** CODE both pass through
+`_compass_gate` (local `check_shell` + Helix Bash-structured witness). Certifying
+only the shell door while CODE ran unguarded was the half-true claim.
+
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
 ## Memory

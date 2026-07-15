@@ -30,6 +30,36 @@ def test_call_when_unavailable():
     assert r["ok"] is False
 
 
+def test_code_path_gated_like_shell():
+    """CODE: must not bypass compass (Claude CODE-path finding)."""
+    from cosmic_cli.agents import StargazerAgent
+
+    agent = StargazerAgent(
+        "t", api_key="test", quiet=True, use_helix=False, show_progress=False
+    )
+    # Local blocklist catches rm inside Python without needing Helix
+    out = agent._run_code('import os; os.system("rm -rf /tmp/x")')
+    assert "BLOCKED" in out
+
+    # Credential-shaped constant in Python — needs Helix; if offline still
+    # should not crash
+    agent2 = StargazerAgent(
+        "t",
+        api_key="test",
+        quiet=True,
+        use_helix=True,
+        show_progress=False,
+        session_id="code-gate-test",
+    )
+    out2 = agent2._run_code(
+        'print("sk-abcdefghijklmnopqrstuvwxyz0123456789")'
+    )
+    # Either PAUSE from Helix or (if helix down) may run — only assert no crash
+    assert isinstance(out2, str)
+    if "BLOCKED" in out2:
+        assert "PAUSE" in out2 or "WITNESS" in out2
+
+
 def test_blocked_shell_stops_without_thrash():
     """PAUSE block must surface to caller, not thrash-retry (Claude #2)."""
     from cosmic_cli.agents import StargazerAgent
