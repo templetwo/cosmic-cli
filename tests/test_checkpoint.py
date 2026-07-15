@@ -64,6 +64,29 @@ def test_tampered_backup_blocks_rollback(tmp_path: Path):
 
     with pytest.raises(CheckpointError, match="backup corrupted"):
         manager.rollback(manifest)
+    # refuse-all: workspace left as caller left it (no partial restore)
+    assert target.read_text(encoding="utf-8") == "modified"
+
+
+def test_refuse_all_when_one_of_two_backups_corrupt(tmp_path: Path):
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    a.write_text("A0", encoding="utf-8")
+    b.write_text("B0", encoding="utf-8")
+    manager = CheckpointManager(tmp_path)
+    manifest = manager.create_checkpoint([a, b])
+
+    (Path(manifest.backup_root) / "payload" / "b.txt").write_text(
+        "B-TAMPER", encoding="utf-8"
+    )
+    a.write_text("A1", encoding="utf-8")
+    b.write_text("B1", encoding="utf-8")
+
+    with pytest.raises(CheckpointError, match="refuse-all"):
+        manager.rollback(manifest)
+    # Neither file restored (preflight failed before any apply)
+    assert a.read_text(encoding="utf-8") == "A1"
+    assert b.read_text(encoding="utf-8") == "B1"
 
 
 def test_tampered_manifest_is_rejected(tmp_path: Path):

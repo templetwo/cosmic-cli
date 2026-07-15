@@ -222,23 +222,33 @@ class CheckpointManager:
         return tuple(sorted(set(unrelated)))
 
     def rollback(self, manifest: CheckpointManifest) -> None:
+        """Restore all files or refuse entirely (no partial restore).
+
+        Preflight verifies every backup hash before any workspace mutation.
+        """
         verified = self.load_manifest(Path(manifest.backup_root) / "manifest.json")
         payload_root = Path(verified.backup_root) / "payload"
 
+        # --- preflight: refuse-all if any backup is missing/corrupt ---
+        for snapshot in verified.files:
+            if not snapshot.existed:
+                continue
+            backup = payload_root / snapshot.relative_path
+            if not backup.is_file():
+                raise CheckpointError(
+                    f"backup missing for {snapshot.relative_path} — refuse-all rollback"
+                )
+            backup_sha = _sha256_file(backup)
+            if backup_sha != snapshot.backup_sha256:
+                raise CheckpointError(
+                    f"backup corrupted for {snapshot.relative_path} — refuse-all rollback"
+                )
+
+        # --- apply only after all backups verify ---
         for snapshot in verified.files:
             target = self.workspace_root / snapshot.relative_path
             if snapshot.existed:
                 backup = payload_root / snapshot.relative_path
-                if not backup.is_file():
-                    raise CheckpointError(
-                        f"backup missing for {snapshot.relative_path}"
-                    )
-                backup_sha = _sha256_file(backup)
-                if backup_sha != snapshot.backup_sha256:
-                    raise CheckpointError(
-                        f"backup corrupted for {snapshot.relative_path}"
-                    )
-
                 target.parent.mkdir(parents=True, exist_ok=True)
                 temp_target = target.with_name(
                     f".{target.name}.cosmic-restore-{secrets.token_hex(4)}"

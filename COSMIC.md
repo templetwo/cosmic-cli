@@ -79,10 +79,11 @@ all matches reported; unknown dispositions rejected at load. Local PAUSE mints a
 single-use action-bound token (`COSMIC_APPROVAL_TOKEN`); Helix PAUSE still uses
 `cosmic-cli helix confirm <token>`.
 
-**Avionics stack (v0.8):** `policy` · `rules` · `gateway` · `checkpoint` ·
-`self_correction` — assembled 2026-07-15 from the six-bundle afternoon, adopted
-into the live runtime. Gateway is the local authorize door; checkpoint/rollback
-and bounded self-correction are available for mutation paths.
+**Avionics stack (v0.8.1):** `policy` · `rules` · `gateway` · `checkpoint` ·
+`self_correction`. Local door: SHELL/CODE **and** EDIT/WRITE/CREATE/MKDIR.
+PAUSE tokens validate early, **consume only after all gates allow** (no
+token-burn on check_shell). Checkpoint rollback is refuse-all on tamper.
+Approval store is fail-closed.
 
 ## Memory
 

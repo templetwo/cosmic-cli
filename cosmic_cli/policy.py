@@ -99,17 +99,27 @@ def _compute_sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 def validate_and_load_rules(raw_rules: List[dict]) -> List[PolicyRule]:
-    """Validate every rule. Raise on unknown disposition or bad data."""
+    """Validate every rule. Raise on unknown disposition or bad data.
+
+    Missing disposition/type is an error (not silent OPEN).
+    """
     validated: List[PolicyRule] = []
     for r in raw_rules:
+        raw_disp = r.get("disposition") if r.get("disposition") is not None else r.get("type")
+        if raw_disp is None or str(raw_disp).strip() == "":
+            raise PolicyValidationError(
+                f"Missing disposition on rule {r.get('id') or r.get('rule_id') or '?'}"
+            )
         try:
-            disp = Disposition(r.get("disposition") or r.get("type", "OPEN"))
+            disp = Disposition(str(raw_disp).strip().upper())
         except ValueError:
-            raise PolicyValidationError(f"Unknown disposition: {r.get('disposition') or r.get('type')}")
+            raise PolicyValidationError(f"Unknown disposition: {raw_disp}")
 
-        scopes_raw = r.get("scopes") or r.get("scope", "SHELL")
+        scopes_raw = r.get("scopes") if r.get("scopes") is not None else r.get("scope", "SHELL")
         if isinstance(scopes_raw, str):
-            scopes = frozenset(ActionType(s.strip()) for s in scopes_raw.split(",") if s.strip())
+            scopes = frozenset(
+                ActionType(s.strip()) for s in scopes_raw.split(",") if s.strip()
+            )
         else:
             scopes = frozenset(ActionType(s) for s in scopes_raw)
 
@@ -127,6 +137,25 @@ def validate_and_load_rules(raw_rules: List[dict]) -> List[PolicyRule]:
         )
         validated.append(rule)
     return validated
+
+
+def policy_fingerprint(rules: List[PolicyRule]) -> str:
+    """Stable hash of a rule set for receipts (not a placeholder string)."""
+    payload = [
+        {
+            "id": r.rule_id,
+            "disposition": r.disposition.value,
+            "scopes": sorted(s.value for s in r.scopes),
+            "match_type": r.match_type.value,
+            "pattern": r.pattern,
+            "priority": r.priority,
+            "enabled": r.enabled,
+        }
+        for r in rules
+    ]
+    return _compute_sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
 
 def evaluate_rules(
     rules: List[PolicyRule],
@@ -166,6 +195,10 @@ def evaluate_rules(
         if matched:
             matches.append(RuleMatch(rule=rule, matched_value=rule.pattern))
 
+    pol_hash = policy_sha256 or (
+        policy_fingerprint(rules) if rules else _compute_sha256(b"empty-policy")
+    )
+
     if not matches:
         # Explicit default: OPEN. NOTE: this is fail-open — a true fail-closed
         # default remains future work (v0.4 comment claimed fail-closed; it was not).
@@ -173,7 +206,7 @@ def evaluate_rules(
             disposition=Disposition.OPEN,
             matches=(),
             default_used=True,
-            policy_sha256=policy_sha256 or "no-policy",
+            policy_sha256=pol_hash,
             evaluated_input_sha256=_compute_sha256(input_str.encode("utf-8")),
         )
 
@@ -182,7 +215,7 @@ def evaluate_rules(
         disposition=strongest.rule.disposition,
         matches=tuple(matches),
         default_used=False,
-        policy_sha256=policy_sha256 or "policy-hash",
+        policy_sha256=pol_hash,
         evaluated_input_sha256=_compute_sha256(input_str.encode("utf-8")),
     )
 

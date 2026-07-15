@@ -21,7 +21,8 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 
 from cosmic_cli.context import ContextManager
-from cosmic_cli.gateway import ActionGateway, ApprovalManager
+from cosmic_cli.checkpoint import CheckpointManager
+from cosmic_cli.gateway import ActionGateway, ApprovalManager, ApprovalStoreError
 from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.rules import load_rules_from_markdown
@@ -116,10 +117,21 @@ class StargazerAgent:
         self.approval_token_id = approval_token_id or os.getenv(
             "COSMIC_APPROVAL_TOKEN"
         )
-        self._approval_mgr = ApprovalManager()
+        try:
+            self._approval_mgr = ApprovalManager()
+        except ApprovalStoreError as e:
+            logger.warning("approval store: %s — in-memory only this process", e)
+            self._approval_mgr = ApprovalManager(
+                store_path=Path(tempfile.mkdtemp()) / "approvals.json"
+            )
         self._policy_rules = None  # lazy-load from COSMIC.md
+        try:
+            self._checkpoint_mgr = CheckpointManager(self.root)
+        except Exception:
+            self._checkpoint_mgr = None  # type: ignore
         self._gateway = ActionGateway(
             policy_evaluator=evaluate_rules,
+            checkpoint_manager=self._checkpoint_mgr,
             approval_manager=self._approval_mgr,
         )
         self.context_memory: List[str] = []
@@ -495,7 +507,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             if path not in self.files_read:
                 self.files_read[path] = self.context_manager.read_file(path)
             self._log(f"EDIT {path}")
-            obs, ok = tool_edit(self.root, path, old, new)
+
+            def _do_edit():
+                return tool_edit(self.root, path, old, new)
+
+            result = self._run_mutation(
+                ActionType.EDIT,
+                path,
+                f"EDIT {path}\n{old[:400]}\n{new[:400]}",
+                _do_edit,
+            )
+            if isinstance(result, str):
+                return result
+            obs, ok = result
             self._add_to_memory(obs, label="edit")
             if ok:
                 self.files_edited.append(path)
@@ -523,7 +547,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     "(or use --mode full)."
                 )
             self._log(f"WRITE {path}")
-            obs, ok = tool_write(self.root, path, content)
+
+            def _do_write():
+                return tool_write(self.root, path, content)
+
+            result = self._run_mutation(
+                ActionType.WRITE,
+                path,
+                f"WRITE {path}\n{content[:800]}",
+                _do_write,
+            )
+            if isinstance(result, str):
+                return result
+            obs, ok = result
             self._add_to_memory(obs, label="write")
             if ok:
                 self.files_edited.append(path)
@@ -540,7 +576,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             except PermissionError as e:
                 return f"[Error] {e}"
             self._log(f"MKDIR {path}")
-            obs, ok = tool_mkdir(self.root, path)
+
+            def _do_mkdir():
+                return tool_mkdir(self.root, path)
+
+            result = self._run_mutation(
+                ActionType.WRITE,
+                path,
+                f"MKDIR {path}",
+                _do_mkdir,
+            )
+            if isinstance(result, str):
+                return result
+            obs, ok = result
             self._add_to_memory(obs, label="mkdir")
             return obs
 
@@ -555,7 +603,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             except PermissionError as e:
                 return f"[Error] {e}"
             self._log(f"CREATE {path}")
-            obs, ok = tool_create(self.root, path, content)
+
+            def _do_create():
+                return tool_create(self.root, path, content)
+
+            result = self._run_mutation(
+                ActionType.WRITE,
+                path,
+                f"CREATE {path}\n{content[:800]}",
+                _do_create,
+            )
+            if isinstance(result, str):
+                return result
+            obs, ok = result
             self._add_to_memory(obs, label="create")
             if ok:
                 self.files_edited.append(path)
@@ -984,84 +1044,188 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             self._policy_rules = (
                 load_rules_from_markdown(cosmic_md) if cosmic_md.is_file() else []
             )
-        except Exception as e:  # pragma: no cover
-            logger.debug("policy load skip: %s", e)
+        except Exception as e:
+            # Fail closed on corrupt/typo policy — do not run with empty silent allow.
+            logger.warning("policy load failed: %s", e)
             self._policy_rules = []
+            self._policy_load_error = str(e)
+        else:
+            self._policy_load_error = None
         return self._policy_rules
+
+    def _run_mutation(
+        self,
+        action_type: ActionType,
+        path: str,
+        action_input: str,
+        executor_fn,
+    ):
+        """Authorize + execute mutation through gateway (checkpoint when available).
+
+        Returns executor result, or a [BLOCKED]/[Error] string.
+        """
+        if self.exec_mode == "full":
+            return executor_fn()
+
+        rules = self._load_policy_rules()
+        if getattr(self, "_policy_load_error", None):
+            return (
+                f"[BLOCKED] local policy load failed — refusing mutations: "
+                f"{self._policy_load_error}"
+            )
+
+        intended = [self.root / path]
+        try:
+            receipt = self._gateway.authorize(
+                action_type=action_type,
+                action_input=action_input,
+                policy_rules=rules,
+                intended_paths=intended if self._checkpoint_mgr else None,
+                executor_name="stargazer",
+                approval_token_id=self.approval_token_id,
+            )
+            return self._gateway.execute_with_receipt(receipt, executor_fn)
+        except PermissionError as e:
+            msg = str(e)
+            if "PAUSE" in msg and "token" in msg.lower():
+                decision = evaluate_rules(rules, action_type, action_input)
+                if decision.disposition == Disposition.PAUSE:
+                    try:
+                        tok = self._approval_mgr.mint_token(
+                            decision.evaluated_input_sha256
+                        )
+                    except ApprovalStoreError as se:
+                        return f"[BLOCKED] local policy PAUSE — cannot mint token: {se}"
+                    return (
+                        f"[BLOCKED] local policy PAUSE ({action_type.value}): "
+                        f"{decision.matches[0].rule.rule_id if decision.matches else 'policy'}. "
+                        f"Token: {tok}. Re-run with COSMIC_APPROVAL_TOKEN={tok} "
+                        f"(single-use, action-bound)."
+                    )
+            return f"[BLOCKED] local policy ({action_type.value}): {msg}"
+        except Exception as e:
+            return f"[Error] mutation gateway: {e}"
 
     def _compass_gate(self, payload: str, *, kind: str = "SHELL") -> Optional[str]:
         """Single door for SHELL and CODE execution.
 
-        Order (avionics assembly 2026-07-15):
-        1. Local policy kernel via ActionGateway (COSMIC.md Compass Rules)
+        Order (Claude live-fire fix 2026-07-15):
+        1. Local policy *evaluate* (PAUSE token validated, not consumed)
         2. Local check_shell blocklist
-        3. Helix Bash-structured witness (remote compass + credential scan)
+        3. Helix Bash-structured witness
+        4. Only if all allow: consume PAUSE token
 
         full exec_mode skips 1 and 3 (explicit blast-radius opt-in).
         Returns a [BLOCKED] message or None if allowed.
         """
         action_type = ActionType.CODE if kind == "CODE" else ActionType.SHELL
+        decision = None
+        rules: list = []
 
-        # 1. Local policy gateway (only door for project COSMIC.md rules)
+        # 1. Local policy evaluate (no token burn yet)
         if self.exec_mode != "full":
             rules = self._load_policy_rules()
+            if getattr(self, "_policy_load_error", None) and rules == []:
+                # corrupt COSMIC.md with zero rules loaded after error
+                return (
+                    f"[BLOCKED] local policy load failed ({kind}): "
+                    f"{self._policy_load_error}"
+                )
             if rules:
-                try:
-                    self._gateway.authorize(
-                        action_type=action_type,
-                        action_input=payload,
-                        policy_rules=rules,
-                        executor_name="stargazer",
-                        approval_token_id=self.approval_token_id,
+                decision = evaluate_rules(rules, action_type, payload)
+                if decision.disposition == Disposition.WITNESS:
+                    rid = (
+                        decision.matches[0].rule.rule_id
+                        if decision.matches
+                        else "policy"
                     )
-                except PermissionError as e:
-                    msg = str(e)
-                    if "PAUSE" in msg and "token" in msg.lower():
-                        # Mint a single-use local token for re-run (ApprovalManager).
-                        decision = evaluate_rules(rules, action_type, payload)
-                        if decision.disposition == Disposition.PAUSE:
+                    return (
+                        f"[BLOCKED] local policy WITNESS ({kind}): {rid}"
+                    )
+                if decision.disposition == Disposition.PAUSE:
+                    if not self.approval_token_id:
+                        try:
                             tok = self._approval_mgr.mint_token(
                                 decision.evaluated_input_sha256
                             )
+                        except ApprovalStoreError as se:
                             return (
                                 f"[BLOCKED] local policy PAUSE ({kind}): "
-                                f"{decision.matches[0].rule.rule_id if decision.matches else 'policy'}. "
-                                f"Token: {tok}. Re-run with COSMIC_APPROVAL_TOKEN={tok} "
-                                f"(single-use, action-bound)."
+                                f"cannot mint token: {se}"
                             )
-                    return f"[BLOCKED] local policy ({kind}): {msg}"
+                        rid = (
+                            decision.matches[0].rule.rule_id
+                            if decision.matches
+                            else "policy"
+                        )
+                        return (
+                            f"[BLOCKED] local policy PAUSE ({kind}): {rid}. "
+                            f"Token: {tok}. Re-run with COSMIC_APPROVAL_TOKEN={tok} "
+                            f"(single-use, action-bound)."
+                        )
+                    try:
+                        if not self._approval_mgr.validate(
+                            self.approval_token_id,
+                            decision.evaluated_input_sha256,
+                        ):
+                            return (
+                                f"[BLOCKED] local policy PAUSE ({kind}): "
+                                f"token invalid, expired, or already used"
+                            )
+                    except ApprovalStoreError as se:
+                        return (
+                            f"[BLOCKED] local policy PAUSE ({kind}): "
+                            f"approval store error: {se}"
+                        )
 
-        # 2. Local shell blocklist
+        # 2. Local shell blocklist (before token consume — no burn on block)
         blocked = check_shell(payload, exec_mode=self.exec_mode)
         if blocked:
             return blocked.replace("safe mode", f"safe mode ({kind})")
 
         # 3. Helix remote witness
-        if not (self.use_helix and helix_bridge is not None and self.exec_mode != "full"):
-            return None
-        try:
-            w = helix_bridge.witness(
-                tool_name="Bash",
-                tool_input={"command": payload},
-                session_id=self.session_id,
-            )
-            decision = helix_bridge.parse_witness(w)
-            cls = decision.get("classification") or "OPEN"
-            if cls == "WITNESS":
-                return (
-                    f"[BLOCKED] Helix compass WITNESS ({kind}): "
-                    f"{decision.get('reason') or 'denied'}"
+        if self.use_helix and helix_bridge is not None and self.exec_mode != "full":
+            try:
+                w = helix_bridge.witness(
+                    tool_name="Bash",
+                    tool_input={"command": payload},
+                    session_id=self.session_id,
                 )
-            if cls == "PAUSE" and decision.get("blocked", True):
-                tok = decision.get("pending_token") or "?"
+                hdec = helix_bridge.parse_witness(w)
+                cls = hdec.get("classification") or "OPEN"
+                if cls == "WITNESS":
+                    return (
+                        f"[BLOCKED] Helix compass WITNESS ({kind}): "
+                        f"{hdec.get('reason') or 'denied'}"
+                    )
+                if cls == "PAUSE" and hdec.get("blocked", True):
+                    tok = hdec.get("pending_token") or "?"
+                    return (
+                        f"[BLOCKED] Helix compass PAUSE ({kind}): "
+                        f"{hdec.get('reason') or 'needs confirmation'}. "
+                        f"Approve: cosmic-cli helix confirm {tok} "
+                        f"then re-run the {kind} action (token is single-use)."
+                    )
+            except Exception as e:  # pragma: no cover
+                logger.debug("helix witness skip (%s): %s", kind, e)
+
+        # 4. All gates open — consume local PAUSE token now
+        if (
+            decision is not None
+            and decision.disposition == Disposition.PAUSE
+            and self.approval_token_id
+        ):
+            try:
+                if not self._approval_mgr.consume(self.approval_token_id):
+                    return (
+                        f"[BLOCKED] local policy PAUSE ({kind}): "
+                        f"token could not be consumed"
+                    )
+            except ApprovalStoreError as se:
                 return (
-                    f"[BLOCKED] Helix compass PAUSE ({kind}): "
-                    f"{decision.get('reason') or 'needs confirmation'}. "
-                    f"Approve: cosmic-cli helix confirm {tok} "
-                    f"then re-run the {kind} action (token is single-use)."
+                    f"[BLOCKED] local policy PAUSE ({kind}): "
+                    f"approval store error on consume: {se}"
                 )
-        except Exception as e:  # pragma: no cover
-            logger.debug("helix witness skip (%s): %s", kind, e)
         return None
 
     def _run_shell(self, cmd: str) -> str:

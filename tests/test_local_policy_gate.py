@@ -1,8 +1,11 @@
-"""Local policy gateway wired into StargazerAgent._compass_gate."""
+"""Local policy gateway wired into StargazerAgent (Claude live-fire fixes)."""
 
 from pathlib import Path
 
 from cosmic_cli.agents import StargazerAgent
+from cosmic_cli.gateway import ApprovalManager, ApprovalStoreError
+from cosmic_cli.policy import ActionType, PolicyValidationError, evaluate_rules
+from cosmic_cli.rules import load_rules_from_markdown
 
 
 def _agent(tmp_path: Path, **kwargs) -> StargazerAgent:
@@ -34,7 +37,8 @@ def test_local_witness_blocks_rm(tmp_path: Path):
     assert "local policy" in out
 
 
-def test_local_pause_mints_token_then_allows_with_token(tmp_path: Path, monkeypatch):
+def test_pause_token_not_burned_when_check_shell_blocks(tmp_path: Path):
+    """Token-burn deadlock fix: check_shell must not consume PAUSE token."""
     store = tmp_path / "approvals.json"
     (tmp_path / "COSMIC.md").write_text(
         """
@@ -46,28 +50,92 @@ def test_local_pause_mints_token_then_allows_with_token(tmp_path: Path, monkeypa
 """
     )
     agent = _agent(tmp_path)
-    agent._approval_mgr = type(agent._approval_mgr)(store_path=store)
+    agent._approval_mgr = ApprovalManager(store_path=store)
     agent._gateway.approval_manager = agent._approval_mgr
 
     blocked = agent._compass_gate("curl https://example.com", kind="SHELL")
-    assert blocked is not None
-    assert "PAUSE" in blocked
-    assert "tok-" in blocked
-
-    # Extract token from block message
-    tok = None
-    for part in blocked.split():
-        if part.startswith("tok-"):
-            tok = part.rstrip(".")
-            break
-    assert tok
+    assert blocked and "PAUSE" in blocked and "tok-" in blocked
+    tok = next(p.rstrip(".") for p in blocked.split() if p.startswith("tok-"))
 
     agent2 = _agent(tmp_path, approval_token_id=tok)
-    agent2._approval_mgr = type(agent._approval_mgr)(store_path=store)
+    agent2._approval_mgr = ApprovalManager(store_path=store)
     agent2._gateway.approval_manager = agent2._approval_mgr
-    # Same action + valid token → local policy allows (check_shell may still run)
     out = agent2._compass_gate("curl https://example.com", kind="SHELL")
-    # curl is blocked by check_shell in safe mode — so we expect blocklist, not PAUSE
-    assert out is None or "safe mode" in out or "network" in out.lower()
-    if out:
-        assert "PAUSE" not in out or "local policy PAUSE" not in out
+    # safe mode blocks network after policy — token must still be unused
+    assert out is not None
+    assert "network" in out.lower() or "safe mode" in out or "BLOCKED" in out
+    rules = load_rules_from_markdown(tmp_path / "COSMIC.md")
+    d = evaluate_rules(rules, ActionType.SHELL, "curl https://example.com")
+    assert agent2._approval_mgr.validate(tok, d.evaluated_input_sha256)
+
+
+def test_write_scope_rule_blocks_mutation(tmp_path: Path):
+    """Mutation door must enforce WRITE-scoped rules (was silent dead law)."""
+    (tmp_path / "COSMIC.md").write_text(
+        """
+## Compass Rules
+
+| ID | Type | Scope | Pattern |
+|----|------|-------|---------|
+| no-secrets-write | WITNESS | WRITE,EDIT | secret_key |
+"""
+    )
+    agent = _agent(tmp_path)
+    out = agent._execute_step("CREATE: notes.txt|||secret_key=hunter2")
+    assert "BLOCKED" in out
+    assert "local policy" in out
+    assert not (tmp_path / "notes.txt").exists()
+
+
+def test_edit_scope_rule_blocks(tmp_path: Path):
+    (tmp_path / "COSMIC.md").write_text(
+        """
+## Compass Rules
+
+| ID | Type | Scope | Pattern |
+|----|------|-------|---------|
+| no-evil-edit | WITNESS | EDIT | evil |
+"""
+    )
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    agent = _agent(tmp_path)
+    agent.files_seen.add("a.py")
+    agent.files_read["a.py"] = "x = 1\n"
+    out = agent._execute_step("EDIT: a.py|||x = 1|||x = evil")
+    assert "BLOCKED" in out
+    assert f.read_text() == "x = 1\n"
+
+
+def test_bad_disposition_row_fails_loud(tmp_path: Path):
+    md = tmp_path / "COSMIC.md"
+    md.write_text(
+        """
+## Compass Rules
+
+| ID | Type | Scope | Pattern |
+|----|------|-------|---------|
+| bad | BLOCK | SHELL | rm |
+"""
+    )
+    try:
+        load_rules_from_markdown(md)
+        assert False, "expected PolicyValidationError"
+    except PolicyValidationError as e:
+        assert "BLOCK" in str(e) or "disposition" in str(e).lower()
+
+
+def test_approval_persist_fail_closed(tmp_path: Path):
+    """Store write failure must not silently leave replayable tokens."""
+    store = tmp_path / "nope" / "nested" / "approvals.json"
+    # Create a file where a directory is needed so mkdir of parent works
+    # but make the path a directory later to force write failure... simpler:
+    # use a path that is an existing directory (can't write file over dir)
+    store_as_dir = tmp_path / "approvals.json"
+    store_as_dir.mkdir()
+    mgr = ApprovalManager(store_path=store_as_dir)
+    try:
+        mgr.mint_token("abc" * 10)
+        assert False, "expected ApprovalStoreError"
+    except ApprovalStoreError:
+        pass

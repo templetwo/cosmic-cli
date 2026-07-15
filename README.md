@@ -6,7 +6,7 @@ Not another agent TUI. Cosmic is the mission protocol a cockpit calls:
 tool-shaped actions, T2Helix memory, compass-gated execution, and an
 independent review seat.
 
-**Default model:** `grok-4.5` · **v0.8.0** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
+**Default model:** `grok-4.5` · **v0.8.1** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
 
 ## What it is
 
@@ -123,7 +123,9 @@ In-process policy on top of Helix compass — one door for SHELL/CODE:
 | `checkpoint` | Content-preserving backup + exact rollback |
 | `self_correction` | Bounded plan→review→execute→verify loop |
 
-Gate order: **local policy** → **check_shell** → **Helix witness**.
+Gate order (SHELL/CODE): **local policy (validate)** → **check_shell** → **Helix witness** → **consume PAUSE token**.
+
+Mutations (EDIT/WRITE/CREATE/MKDIR): **gateway authorize + execute_with_receipt** (checkpoint when available).
 
 ## Horizon
 
