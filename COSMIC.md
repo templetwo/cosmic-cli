@@ -52,6 +52,9 @@ Google `AIza`, Slack `xox…`, npm, SendGrid, …) — not a partial subset. Sam
 failure shape: path lock claimed complete while ordinary files leaked provider
 tokens into model context and mission logs.
 
+**Ollama path removed (2026-07-14):** Project evolved past the local Ollama twin.
+One Stargazer runtime (Grok + Helix). No second, less-gated execution path.
+
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
 ## Memory

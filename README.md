@@ -32,7 +32,6 @@ Later wins: package `.env` → `~/.cosmic-cli/.env` → cwd `.env`
 ```
 XAI_API_KEY=xai-…
 COSMIC_GROK_MODEL=grok-4.5
-OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 ## Memory substrate (T2Helix)

@@ -1,4 +1,4 @@
-"""Shared shell safety for Grok + Ollama paths (audit C1/H1/H2)."""
+"""Shell safety for Stargazer (audit C1/H1/H2)."""
 
 from __future__ import annotations
 

@@ -4,7 +4,7 @@
 from .agents import StargazerAgent
 from .context import ContextManager
 
-__version__ = "0.6.5"
+__version__ = "0.6.6"
 __author__ = "Anthony Vasquez Sr. / Temple of Two"
 __description__ = "Grok Stargazer + T2Helix local memory substrate"
 

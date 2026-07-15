@@ -23,7 +23,6 @@ from xai_sdk.chat import assistant, system, user
 from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
 from cosmic_cli import helix_bridge
 from cosmic_cli.init_cmd import write_init
-from cosmic_cli.ollama_agent import OllamaStargazerAgent
 from cosmic_cli.principles import DIFFERENTIATORS
 from cosmic_cli.review import (
     build_bundle,
@@ -54,7 +53,6 @@ def load_manual_env() -> None:
         "XAI_API_KEY",
         "GROK_API_KEY",
         "COSMIC_GROK_MODEL",
-        "OLLAMA_BASE_URL",
     }
     # Later paths win, but warn if cwd .env overrides auth (audit M1).
     cwd_env = Path.cwd() / ".env"
@@ -75,7 +73,7 @@ def load_manual_env() -> None:
                                 prev
                                 and prev != value
                                 and dotenv_path.resolve() == cwd_env.resolve()
-                                and key in ("XAI_API_KEY", "OLLAMA_BASE_URL")
+                                and key == "XAI_API_KEY"
                             ):
                                 # deferred print — console may not exist yet
                                 os.environ["_COSMIC_ENV_OVERRIDE_WARN"] = (
@@ -654,34 +652,6 @@ def doctor_cmd() -> None:
         except Exception as e:
             console.print(f"[red]✗[/red] models API failed: {e}")
 
-    # ollama — try configured URL, then localhost fallback
-    import urllib.request
-
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    ollama_ok = False
-    for url in dict.fromkeys([ollama_url, "http://localhost:11434"]):
-        try:
-            with urllib.request.urlopen(f"{url}/api/tags", timeout=2) as resp:
-                tags = json.loads(resp.read().decode())
-            names = [m.get("name") for m in tags.get("models", [])]
-            console.print(
-                f"[green]✓[/green] Ollama @ {url}: {', '.join(names) or '(no models)'}"
-            )
-            if url != ollama_url:
-                console.print(
-                    f"[yellow]![/yellow] OLLAMA_BASE_URL={ollama_url} failed; "
-                    "using localhost. Update ~/.cosmic-cli/.env"
-                )
-            ollama_ok = True
-            break
-        except Exception:
-            continue
-    if not ollama_ok:
-        console.print(
-            f"[dim]·[/dim] Ollama not reachable ({ollama_url}). "
-            "Local fallback: cosmic-cli stargazer ollama --ollama-url http://localhost:11434"
-        )
-
     console.print(f"  cwd: {os.getcwd()}")
     console.print(f"  package: {Path(__file__).resolve().parent.parent}")
     console.print(f"  echo file: {Path.home() / '.cosmic_echo.jsonl'}")
@@ -882,34 +852,6 @@ def deploy(
         auto_verify=verify,
     )
     if result.get("status") != "complete":
-        sys.exit(1)
-
-
-@stargazer.command("ollama")
-@click.argument("directive")
-@click.option("--ollama-url", default=None)
-@click.option("--model", default="gemma4:e2b", show_default=True)
-@click.option("--consciousness/--no-consciousness", default=False)
-def ollama_cmd(directive, ollama_url, model, consciousness) -> None:
-    """Local Ollama Stargazer (no xAI credits)."""
-    if not ollama_url:
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-
-    def on_update(msg: str) -> None:
-        console.print(f"[cyan]{msg}[/cyan]")
-
-    console.print(f"[magenta]ollama · {model} @ {ollama_url}[/magenta]")
-    agent = OllamaStargazerAgent(
-        directive=directive,
-        ollama_url=ollama_url,
-        model=model,
-        ui_callback=on_update,
-        work_dir=os.getcwd(),
-        enable_consciousness=consciousness,
-    )
-    ok = agent.execute()
-    console.print("[green]done[/green]" if ok else "[yellow]incomplete[/yellow]")
-    if not ok:
         sys.exit(1)
 
 
