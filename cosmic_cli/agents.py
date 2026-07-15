@@ -21,7 +21,10 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 
 from cosmic_cli.context import ContextManager
+from cosmic_cli.gateway import ActionGateway, ApprovalManager
+from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.principles import system_prompt_block
+from cosmic_cli.rules import load_rules_from_markdown
 from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
 from cosmic_cli.shell_guard import check_shell
 from cosmic_cli.tools import (
@@ -98,6 +101,7 @@ class StargazerAgent:
         use_helix: bool = True,
         helix_context: str = "",
         api_timeout: float = 120.0,
+        approval_token_id: Optional[str] = None,
     ):
         self.directive = directive
         self.client = Client(api_key=api_key, timeout=api_timeout)
@@ -107,6 +111,17 @@ class StargazerAgent:
         self.exec_mode = exec_mode
         self.root = Path(work_dir).resolve()
         self.context_manager = ContextManager(root_dir=str(self.root))
+        # Local policy kernel + gateway (avionics assembly 2026-07-15).
+        # Helix compass remains the remote witness; this is the in-process door.
+        self.approval_token_id = approval_token_id or os.getenv(
+            "COSMIC_APPROVAL_TOKEN"
+        )
+        self._approval_mgr = ApprovalManager()
+        self._policy_rules = None  # lazy-load from COSMIC.md
+        self._gateway = ActionGateway(
+            policy_evaluator=evaluate_rules,
+            approval_manager=self._approval_mgr,
+        )
         self.context_memory: List[str] = []
         self.files_read: Dict[str, str] = {}
         self.files_seen: set[str] = set()  # ever successfully read this mission
@@ -960,23 +975,71 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         mem = self.context_memory[-1] if self.context_memory else "no context"
         return f"FINISH: Available context only.\n{mem[:800]}"
 
+    def _load_policy_rules(self):
+        """Load ## Compass Rules from project COSMIC.md (cached per agent)."""
+        if self._policy_rules is not None:
+            return self._policy_rules
+        cosmic_md = self.root / "COSMIC.md"
+        try:
+            self._policy_rules = (
+                load_rules_from_markdown(cosmic_md) if cosmic_md.is_file() else []
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug("policy load skip: %s", e)
+            self._policy_rules = []
+        return self._policy_rules
+
     def _compass_gate(self, payload: str, *, kind: str = "SHELL") -> Optional[str]:
-        """Shared pre-execution gate for SHELL and CODE (Claude CODE-path finding).
+        """Single door for SHELL and CODE execution.
 
-        1. Local check_shell on the payload string (catches rm -rf inside Python).
-        2. Helix witness as Bash-structured action so Bash-scoped rules +
-           credential-paste see the content (same wire as shell fix).
+        Order (avionics assembly 2026-07-15):
+        1. Local policy kernel via ActionGateway (COSMIC.md Compass Rules)
+        2. Local check_shell blocklist
+        3. Helix Bash-structured witness (remote compass + credential scan)
 
+        full exec_mode skips 1 and 3 (explicit blast-radius opt-in).
         Returns a [BLOCKED] message or None if allowed.
         """
+        action_type = ActionType.CODE if kind == "CODE" else ActionType.SHELL
+
+        # 1. Local policy gateway (only door for project COSMIC.md rules)
+        if self.exec_mode != "full":
+            rules = self._load_policy_rules()
+            if rules:
+                try:
+                    self._gateway.authorize(
+                        action_type=action_type,
+                        action_input=payload,
+                        policy_rules=rules,
+                        executor_name="stargazer",
+                        approval_token_id=self.approval_token_id,
+                    )
+                except PermissionError as e:
+                    msg = str(e)
+                    if "PAUSE" in msg and "token" in msg.lower():
+                        # Mint a single-use local token for re-run (ApprovalManager).
+                        decision = evaluate_rules(rules, action_type, payload)
+                        if decision.disposition == Disposition.PAUSE:
+                            tok = self._approval_mgr.mint_token(
+                                decision.evaluated_input_sha256
+                            )
+                            return (
+                                f"[BLOCKED] local policy PAUSE ({kind}): "
+                                f"{decision.matches[0].rule.rule_id if decision.matches else 'policy'}. "
+                                f"Token: {tok}. Re-run with COSMIC_APPROVAL_TOKEN={tok} "
+                                f"(single-use, action-bound)."
+                            )
+                    return f"[BLOCKED] local policy ({kind}): {msg}"
+
+        # 2. Local shell blocklist
         blocked = check_shell(payload, exec_mode=self.exec_mode)
         if blocked:
             return blocked.replace("safe mode", f"safe mode ({kind})")
+
+        # 3. Helix remote witness
         if not (self.use_helix and helix_bridge is not None and self.exec_mode != "full"):
             return None
         try:
-            # Tag as Bash so tool-scoped rules apply; payload is the full text
-            # (shell command or Python source). Credential regex scans the string.
             w = helix_bridge.witness(
                 tool_name="Bash",
                 tool_input={"command": payload},

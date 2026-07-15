@@ -61,6 +61,29 @@ path; not shipped as package surface.
 
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
+## Compass Rules
+
+**Status:** human-readable view loaded by `cosmic_cli.rules.load_rules_from_markdown`
+on every mission (when this file exists in the work root). Authoritative remote
+compass remains T2Helix; this table is the **local** policy kernel door
+(`ActionGateway` → then `check_shell` → then Helix witness).
+
+| ID | Type | Scope | Pattern |
+|----|------|-------|---------|
+| destructive-rm | WITNESS | SHELL,CODE | rm -rf |
+| outbound-net | PAUSE | SHELL,CODE,NETWORK | curl |
+| example-allow | OPEN | SHELL | safe-command |
+
+**Loader:** 4-column table under this heading. Severity lattice WITNESS > PAUSE > OPEN;
+all matches reported; unknown dispositions rejected at load. Local PAUSE mints a
+single-use action-bound token (`COSMIC_APPROVAL_TOKEN`); Helix PAUSE still uses
+`cosmic-cli helix confirm <token>`.
+
+**Avionics stack (v0.8):** `policy` · `rules` · `gateway` · `checkpoint` ·
+`self_correction` — assembled 2026-07-15 from the six-bundle afternoon, adopted
+into the live runtime. Gateway is the local authorize door; checkpoint/rollback
+and bounded self-correction are available for mutation paths.
+
 ## Memory
 
 - Substrate: T2Helix SQLite (`T2HELIX_DATA_DIR`, default Claude plugin data dir when present)

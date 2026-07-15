@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cosmic-cli"
-version = "0.7.0"
-description = "Temple runtime avionics: Grok Stargazer agent, T2Helix memory, compass-gated tools"
+version = "0.8.0"
+description = "Temple runtime avionics: Grok Stargazer, T2Helix memory, policy kernel + action gateway"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [

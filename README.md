@@ -6,7 +6,7 @@ Not another agent TUI. Cosmic is the mission protocol a cockpit calls:
 tool-shaped actions, T2Helix memory, compass-gated execution, and an
 independent review seat.
 
-**Default model:** `grok-4.5` · **v0.7.0** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
+**Default model:** `grok-4.5` · **v0.8.0** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
 
 ## What it is
 
@@ -111,11 +111,24 @@ SHELL · CODE · TEST · TODO · PASS · FINISH
 | Project law | `COSMIC.md` via `init` |
 | Helix DB | `$T2HELIX_DATA_DIR` (or default Claude plugin path) |
 
+## Avionics stack (v0.8)
+
+In-process policy on top of Helix compass — one door for SHELL/CODE:
+
+| Module | Role |
+|--------|------|
+| `policy` | Typed rules, severity lattice, monotonic layer compose |
+| `rules` | Load `## Compass Rules` from project `COSMIC.md` |
+| `gateway` | `authorize` → receipt → `execute_with_receipt` |
+| `checkpoint` | Content-preserving backup + exact rollback |
+| `self_correction` | Bounded plan→review→execute→verify loop |
+
+Gate order: **local policy** → **check_shell** → **Helix witness**.
+
 ## Horizon
 
 Documented in repo-root `COSMIC.md`: Cosmic is avionics; cockpits fly.
-One Stargazer path (Grok). Legacy consciousness metrics, Ollama twin, and
-plugin scaffolds live under `_archive/` for history only.
+One Stargazer path (Grok). Legacy material under `_archive/`.
 
 ## Tests
 
