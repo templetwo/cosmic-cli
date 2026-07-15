@@ -45,6 +45,13 @@ Stargazer **stops and surfaces the token** (no thrash-retry). Exit code **4** = 
 `_compass_gate` (local `check_shell` + Helix Bash-structured witness). Certifying
 only the shell door while CODE ran unguarded was the half-true claim.
 
+**READ / redaction (Claude experiment #4):** Sensitive-path blocking is solid
+(`.env`, `.ssh`, key names, resolve+recheck). Content `redact()` must mirror the
+t2helix `secrets.js` vocabulary (AWS AKIA, GitHub `ghp_`, Stripe `sk_live_`,
+Google `AIza`, Slack `xox…`, npm, SendGrid, …) — not a partial subset. Same
+failure shape: path lock claimed complete while ordinary files leaked provider
+tokens into model context and mission logs.
+
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
 ## Memory
