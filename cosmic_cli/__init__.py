@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Cosmic CLI — Grok-powered terminal agent (Stargazer)."""
+"""Cosmic CLI — Temple runtime avionics (Grok Stargazer + T2Helix)."""
 
 from .agents import StargazerAgent
 from .context import ContextManager
 
-__version__ = "0.6.6"
+__version__ = "0.7.0"
 __author__ = "Anthony Vasquez Sr. / Temple of Two"
-__description__ = "Grok Stargazer + T2Helix local memory substrate"
+__description__ = (
+    "Temple runtime avionics: Grok Stargazer agent, T2Helix memory, compass-gated tools"
+)
 
-# Core surface only. Consciousness/plugins are legacy — import explicitly if needed.
 __all__ = [
     "ContextManager",
     "StargazerAgent",

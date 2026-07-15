@@ -1,80 +1,88 @@
 # Cosmic CLI
 
-A **coding-interface agent** for the terminal — not a chat wrapper with a shell escape hatch.
+**Temple runtime avionics** for coding cockpits (Grok Build, Claude Code, shell).
 
-**Default model: `grok-4.5`** · **v0.6.0** · memory via [T2Helix](https://github.com/templetwo/t2helix) (not Sovereign Stack)
+Not another agent TUI. Cosmic is the mission protocol a cockpit calls:
+tool-shaped actions, T2Helix memory, compass-gated execution, and an
+independent review seat.
 
-## What sets this apart
+**Default model:** `grok-4.5` · **v0.7.0** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
 
-| Typical agent CLI | Cosmic Stargazer |
-|-------------------|------------------|
-| Shell mkdir + hope | **`CREATE`** one-shot (parents + file) |
-| Absolute path thrash | **Relative-path bias** + normalize (no `lstrip` footgun) |
-| Monologue plan | **Tool-shaped actions** + discovery thrash steer |
-| Blind overwrite | **READ-before-EDIT** + syntax-safe EDIT |
-| "Done!" vibes | **FINISH receipts** + optional **review** seat |
-| No trail | **Sessions**, echoes, `COSMIC.md` via `init` |
+## What it is
 
-Filesystem is ground truth. The loop + tools + gates are the product.
+| Layer | Role |
+|-------|------|
+| **Stargazer** | Grok agent loop — READ / EDIT / CREATE / SHELL / CODE / FINISH |
+| **T2Helix** | Local SQLite chronicle + compass (shared with Claude seats) |
+| **Review** | Second-pass verdict on a mission (`do --review`) |
+| **Cockpit** | You — Grok Build, Claude Code, or plain terminal |
+
+Filesystem is ground truth. Gates exist so claims about the runtime stay true;
+the product is finishing work.
 
 ## Install
 
 ```bash
-cd ~/cosmic-cli && python3 -m venv venv && source venv/bin/activate
-pip install -e .
-# optional: ~/bin/cosmic-cli launcher
+cd ~/cosmic-cli
+python3 -m venv venv && source venv/bin/activate
+pip install -e ".[test]"
+# optional: symlink ~/bin/cosmic-cli → this repo’s launcher
 ```
+
+Requires Python 3.10+ and an [xAI](https://x.ai) API key.
 
 ## Config
 
-Later wins: package `.env` → `~/.cosmic-cli/.env` → cwd `.env`
+Load order (later wins): package `.env` → `~/.cosmic-cli/.env` → cwd `.env`
 
 ```
 XAI_API_KEY=xai-…
 COSMIC_GROK_MODEL=grok-4.5
+T2HELIX_ROOT=~/t2helix
+# optional: share Claude’s Helix data dir
+# T2HELIX_DATA_DIR=~/.claude/plugins/data/t2helix-templetwo-t2helix
 ```
 
-## Memory substrate (T2Helix)
-
-Cosmic does **not** write the Sovereign Stack directly. It uses the local
-T2Helix SQLite chronicle (shared with Claude Code seats):
+## T2Helix (memory + compass)
 
 ```bash
-# one-time
 git clone https://github.com/templetwo/t2helix ~/t2helix
 cd ~/t2helix && npm install && npm rebuild better-sqlite3
-
 export T2HELIX_ROOT=~/t2helix
-# optional: share Claude plugin data dir
-export T2HELIX_DATA_DIR=~/.claude/plugins/data/t2helix-templetwo-t2helix
 
 cosmic-cli helix status
 cosmic-cli helix boot "what were we building"
 cosmic-cli helix recall "path footgun"
 ```
 
-On every `do`, Cosmic boots Helix memory, sets a session goal, witnesses
-shell via compass, and records mission receipts into the chronicle.
+On each `do`, Cosmic boots Helix memory, sets a session goal, witnesses
+SHELL and CODE through the compass, and records mission receipts.
 
-**Compass (honest):** WITNESS = hard block. PAUSE = soft block with a single-use
-token (`cosmic-cli helix confirm <token>`, then retry). OPEN = allow.
-Do not read older "compass protects both ✓" as full PAUSE parity until this
-table matches your installed adapter.
+**Compass contract**
+
+| Class | Behavior |
+|-------|----------|
+| **WITNESS** | Hard deny — does not run |
+| **PAUSE** | Soft block + single-use token → `cosmic-cli helix confirm <token>` then retry |
+| **OPEN** | Allow |
+
+Exit code **4** = blocked (cockpits can branch). Sensitive paths refuse READ;
+content is redacted before logs/LLM context.
 
 ## Daily path
 
 ```bash
 cosmic-cli doctor
 cosmic-cli helix status
-cosmic-cli init                      # COSMIC.md in this project
-cosmic-cli do 'your task'            # boots Helix
+cosmic-cli init                         # COSMIC.md in this project
+cosmic-cli do 'your task'               # Helix on by default
 cosmic-cli do --no-helix 'offline'
-cosmic-cli do --review 'careful change'
+cosmic-cli do --review 'careful change' # mission + independent review seat
 cosmic-cli review
 cosmic-cli sessions
 ```
 
-**Prefer relative paths** when cwd is home:
+Prefer **relative paths** when cwd is home:
 
 ```bash
 cosmic-cli do 'CREATE Desktop/my-notes/readme.md explaining X'
@@ -88,9 +96,9 @@ MKDIR · CREATE · WRITE · EDIT
 SHELL · CODE · TEST · TODO · PASS · FINISH
 ```
 
-`CREATE: path|||contents` — mkdir parents + write (best for folder+file).  
-`EDIT: path|||old|||new` — unique match; quotes preserved; Python syntax gated.  
-WRITE/CREATE observations return **`rel=`** and **`abs=`** so the model stops find-looping.
+- `CREATE: path|||contents` — parents + file in one shot  
+- `EDIT: path|||old|||new` — unique match; Python syntax gated; `.cosmicbak`  
+- WRITE/CREATE observations return `rel=` and `abs=` (less find-loop thrash)
 
 ## Artifacts
 
@@ -100,7 +108,14 @@ WRITE/CREATE observations return **`rel=`** and **`abs=`** so the model stops fi
 | Sessions | `~/.cosmic-cli/sessions/<id>.jsonl` |
 | Reviews | `~/.cosmic-cli/sessions/<id>.review.json` |
 | Backups | `*.cosmicbak` |
-| Project notes | `COSMIC.md` via `init` |
+| Project law | `COSMIC.md` via `init` |
+| Helix DB | `$T2HELIX_DATA_DIR` (or default Claude plugin path) |
+
+## Horizon
+
+Documented in repo-root `COSMIC.md`: Cosmic is avionics; cockpits fly.
+One Stargazer path (Grok). Legacy consciousness metrics, Ollama twin, and
+plugin scaffolds live under `_archive/` for history only.
 
 ## Tests
 
@@ -108,4 +123,6 @@ WRITE/CREATE observations return **`rel=`** and **`abs=`** so the model stops fi
 pytest tests/ -q
 ```
 
-MIT · Temple of Two
+## License
+
+MIT · [Temple of Two](https://thetempleoftwo.com) · Anthony Vasquez Sr.

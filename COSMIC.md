@@ -55,6 +55,10 @@ tokens into model context and mission logs.
 **Ollama path removed (2026-07-14):** Project evolved past the local Ollama twin.
 One Stargazer runtime (Grok + Helix). No second, less-gated execution path.
 
+**Consciousness + plugins archived (2026-07-14):** Unwired metrics/research layer
+and the FileOperations plugin scaffold moved to `_archive/`. Not on the mission
+path; not shipped as package surface.
+
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
 ## Memory
@@ -79,3 +83,4 @@ cosmic-cli do --review '…'
 - Competing with Grok Build / Claude Code as a fullscreen TUI
 - Safe-mode allowlist deep work (Anthony: not worried)
 - Lying about gates that only log
+- Reviving Ollama / consciousness / plugin twins without a clear capability win

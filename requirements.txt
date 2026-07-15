@@ -1,10 +1,10 @@
-# Deprecated — install with: pip install -e ".[test]"
-# See pyproject.toml for the real dependency list.
+# Deprecated install path — prefer:
+#   pip install -e ".[test]"
+# Canonical deps live in pyproject.toml.
 click>=8.1
 python-dotenv>=1.0
 xai-sdk>=1.0
 rich>=13.0
 pyfiglet>=1.0
 textual>=0.40
-numpy>=1.26
 requests>=2.31
