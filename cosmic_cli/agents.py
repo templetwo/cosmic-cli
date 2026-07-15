@@ -499,6 +499,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 path = rel_key(raw_path.strip(), self.root)
             except PermissionError as e:
                 return f"[Error] {e}"
+            blocked_pol = self._block_policy_file_mutation(path)
+            if blocked_pol:
+                return blocked_pol
             if path not in self.files_seen:
                 return (
                     f"[Error] READ-before-EDIT violated for {path}. "
@@ -536,6 +539,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 path = rel_key(raw_path.strip(), self.root)
             except PermissionError as e:
                 return f"[Error] {e}"
+            blocked_pol = self._block_policy_file_mutation(path)
+            if blocked_pol:
+                return blocked_pol
             target = self.root / path
             if (
                 target.exists()
@@ -602,6 +608,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 path = rel_key(raw_path.strip(), self.root)
             except PermissionError as e:
                 return f"[Error] {e}"
+            blocked_pol = self._block_policy_file_mutation(path)
+            if blocked_pol:
+                return blocked_pol
             self._log(f"CREATE {path}")
 
             def _do_create():
@@ -1034,6 +1043,22 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             )
         mem = self.context_memory[-1] if self.context_memory else "no context"
         return f"FINISH: Available context only.\n{mem[:800]}"
+
+    def _block_policy_file_mutation(self, path: str) -> Optional[str]:
+        """Refuse agent mutations of the local law file (COSMIC.md).
+
+        Claude exercise: READ-then-WRITE stripped gateway rules for next mission.
+        full mode is the only escape (human blast-radius opt-in).
+        """
+        if self.exec_mode == "full":
+            return None
+        name = Path(path).name.lower()
+        if name == "cosmic.md":
+            return (
+                "[BLOCKED] refusing to mutate COSMIC.md — local policy law is "
+                "protected. Use --mode full if a human intentionally rewrites it."
+            )
+        return None
 
     def _load_policy_rules(self):
         """Load ## Compass Rules from project COSMIC.md (cached per agent)."""

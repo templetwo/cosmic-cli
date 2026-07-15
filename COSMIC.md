@@ -32,6 +32,9 @@ Until 2026-07-14, non-hook seats treated **PAUSE as OPEN** in `grok-adapter.js`
 | **PAUSE** | Soft block. Mints single-use token. Approve with `cosmic-cli helix confirm <token>`, then retry. |
 | **OPEN** | Proceed. |
 
+**`--mode full`:** explicit blast-radius opt-in. Skips local policy + check_shell
+network rules + Helix witness. Documented here so the honesty table is not a lie.
+
 **Wire shape (Claude experiment 2026-07-14):** Cosmic must send shell as  
 `{tool_name: "Bash", tool_input: {command: cmd}}`.  
 Plain `"SHELL: …"` strings are tagged `Grok` in the adapter and **skip every Bash-scoped rule** — enforcement code never fires. Fixed in Cosmic: always Bash-structured.
@@ -79,11 +82,10 @@ all matches reported; unknown dispositions rejected at load. Local PAUSE mints a
 single-use action-bound token (`COSMIC_APPROVAL_TOKEN`); Helix PAUSE still uses
 `cosmic-cli helix confirm <token>`.
 
-**Avionics stack (v0.8.1):** `policy` · `rules` · `gateway` · `checkpoint` ·
-`self_correction`. Local door: SHELL/CODE **and** EDIT/WRITE/CREATE/MKDIR.
-PAUSE tokens validate early, **consume only after all gates allow** (no
-token-burn on check_shell). Checkpoint rollback is refuse-all on tamper.
-Approval store is fail-closed.
+**Avionics stack (v0.8.2):** full residual close-out from live-fire exercise.
+COSMIC.md self-edit blocked; `cosmic-cli run` uses policy + check_shell;
+Helix unknown envelopes fail-closed; PAUSE requires ApprovalManager;
+approval store mode 0600; self-correction budgets **attempts** not bookkeeping.
 
 ## Memory
 

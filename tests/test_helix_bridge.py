@@ -157,3 +157,20 @@ def test_parse_witness_pause_and_witness():
         {"ok": True, "result": {"classification": "OPEN", "blocked": False}}
     )
     assert open_["blocked"] is False
+
+
+def test_parse_witness_fail_closed_on_error_and_unknown():
+    """Unknown/malformed envelopes must not OPEN (Claude exercise)."""
+    err = helix_bridge.parse_witness({"ok": False, "error": "rpc down"})
+    assert err["blocked"] is True
+    assert err["classification"] == "WITNESS"
+    assert err.get("fail_closed") is True
+
+    bad = helix_bridge.parse_witness(
+        {"ok": True, "result": {"classification": "BANANA", "blocked": False}}
+    )
+    assert bad["blocked"] is True
+    assert bad["classification"] == "WITNESS"
+
+    empty = helix_bridge.parse_witness({"ok": True, "result": {}})
+    assert empty["blocked"] is True

@@ -97,6 +97,16 @@ class CheckpointManager:
         except ValueError as exc:
             raise CheckpointError(f"path escapes workspace: {path}") from exc
 
+        # Refuse targets inside the backup store (recursion footgun).
+        try:
+            resolved.relative_to(self.backup_dir)
+        except ValueError:
+            pass  # not under backup_dir
+        else:
+            raise CheckpointError(
+                f"refusing to checkpoint path inside backup store: {path}"
+            )
+
         if resolved.exists() and not resolved.is_file():
             raise CheckpointError(f"only regular files are supported: {path}")
         if resolved.is_symlink():

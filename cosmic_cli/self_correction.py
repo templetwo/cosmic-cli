@@ -1,8 +1,9 @@
 """Bounded self-correction state machine (avionics Phase 6).
 
-Assembled from phase6_complete, ported to hardened kernel/gateway/checkpoint
-APIs. Iteration-cap bug fixed on adoption (2026-07-15): happy path is 6
-transitions; the bound is a safety ceiling, not the happy-path length.
+Attempt budget counts WORK cycles (each entry to REVIEW), not bookkeeping
+transitions. Bookkeeping (INTAKE→PLAN→REVIEW, ACCEPT→DONE) does not burn the
+cap — so retry edges can be added later without the old cap-raise bug shape.
+A separate safety_steps ceiling bounds infinite loops.
 EXECUTE remains a stub until wired through gateway.execute_with_receipt.
 """
 
@@ -37,9 +38,20 @@ class CorrectionContext:
     checkpoint: Optional[CheckpointManifest] = None
     result: Optional[str] = None
     error: Optional[str] = None
-    iteration: int = 0
-    # Happy path needs 6 transitions; 32 is a thrash bound, not a goal.
-    max_iterations: int = 32
+    # Work attempts: incremented only when entering REVIEW (authorize cycle).
+    attempts: int = 0
+    max_attempts: int = 8
+    # Total state transitions — hard ceiling against infinite loops.
+    safety_steps: int = 0
+    max_safety_steps: int = 64
+    # Back-compat alias used by older tests/callers
+    @property
+    def iteration(self) -> int:
+        return self.attempts
+
+    @property
+    def max_iterations(self) -> int:
+        return self.max_attempts
 
 
 class BoundedSelfCorrection:
@@ -54,11 +66,18 @@ class BoundedSelfCorrection:
         initial_plan: str,
         intended_paths: List[Path],
         action_type: ActionType = ActionType.SHELL,
+        *,
+        max_attempts: Optional[int] = None,
     ) -> CorrectionContext:
         ctx = CorrectionContext(plan=initial_plan, intended_paths=intended_paths)
+        if max_attempts is not None:
+            ctx.max_attempts = max_attempts
 
-        while ctx.state != CorrectionState.DONE and ctx.iteration < ctx.max_iterations:
-            ctx.iteration += 1
+        while (
+            ctx.state != CorrectionState.DONE
+            and ctx.safety_steps < ctx.max_safety_steps
+        ):
+            ctx.safety_steps += 1
 
             if ctx.state == CorrectionState.INTAKE:
                 ctx.state = CorrectionState.PLAN
@@ -67,6 +86,15 @@ class BoundedSelfCorrection:
                 ctx.state = CorrectionState.REVIEW
 
             elif ctx.state == CorrectionState.REVIEW:
+                # One work attempt per authorize/execute cycle
+                ctx.attempts += 1
+                if ctx.attempts > ctx.max_attempts:
+                    ctx.error = (
+                        f"Max correction attempts ({ctx.max_attempts}) reached "
+                        "— bounded safety triggered"
+                    )
+                    ctx.state = CorrectionState.ROLLBACK
+                    continue
                 try:
                     receipt = self.gateway.authorize(
                         action_type=action_type,
@@ -119,7 +147,7 @@ class BoundedSelfCorrection:
                 ctx.state = CorrectionState.DONE
 
         if ctx.state != CorrectionState.DONE:
-            ctx.error = "Max iterations reached — bounded safety triggered"
+            ctx.error = ctx.error or "Safety step ceiling reached — bounded safety triggered"
             if ctx.checkpoint and self.checkpoint_manager:
                 try:
                     self.checkpoint_manager.rollback(ctx.checkpoint)

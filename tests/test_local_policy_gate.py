@@ -127,10 +127,6 @@ def test_bad_disposition_row_fails_loud(tmp_path: Path):
 
 def test_approval_persist_fail_closed(tmp_path: Path):
     """Store write failure must not silently leave replayable tokens."""
-    store = tmp_path / "nope" / "nested" / "approvals.json"
-    # Create a file where a directory is needed so mkdir of parent works
-    # but make the path a directory later to force write failure... simpler:
-    # use a path that is an existing directory (can't write file over dir)
     store_as_dir = tmp_path / "approvals.json"
     store_as_dir.mkdir()
     mgr = ApprovalManager(store_path=store_as_dir)
@@ -139,3 +135,38 @@ def test_approval_persist_fail_closed(tmp_path: Path):
         assert False, "expected ApprovalStoreError"
     except ApprovalStoreError:
         pass
+
+
+def test_cosmic_md_self_edit_blocked(tmp_path: Path):
+    (tmp_path / "COSMIC.md").write_text(
+        "## Compass Rules\n\n| ID | Type | Scope | Pattern |\n"
+        "|----|------|-------|---------|\n"
+        "| x | OPEN | SHELL | echo |\n"
+    )
+    agent = _agent(tmp_path)
+    agent.files_seen.add("COSMIC.md")
+    agent.files_read["COSMIC.md"] = (tmp_path / "COSMIC.md").read_text()
+    out = agent._execute_step("WRITE: COSMIC.md|||" + "# wiped\n")
+    assert "BLOCKED" in out
+    assert "COSMIC.md" in out
+    assert "Compass Rules" in (tmp_path / "COSMIC.md").read_text()
+
+
+def test_pause_without_approval_manager_refused(tmp_path: Path):
+    from cosmic_cli.gateway import ActionGateway
+    from cosmic_cli.policy import ActionType, evaluate_rules, validate_and_load_rules
+
+    rules = validate_and_load_rules(
+        [{"id": "net", "type": "PAUSE", "scope": "SHELL", "pattern": "curl"}]
+    )
+    gw = ActionGateway(evaluate_rules, approval_manager=None)
+    try:
+        gw.authorize(
+            ActionType.SHELL,
+            "curl x",
+            rules,
+            approval_token_id="tok-garbage",
+        )
+        assert False, "expected PermissionError"
+    except PermissionError as e:
+        assert "ApprovalManager" in str(e)

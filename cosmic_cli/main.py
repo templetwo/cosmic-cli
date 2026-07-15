@@ -23,12 +23,15 @@ from xai_sdk.chat import assistant, system, user
 from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
 from cosmic_cli import helix_bridge
 from cosmic_cli.init_cmd import write_init
+from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.principles import DIFFERENTIATORS
 from cosmic_cli.review import (
     build_bundle,
     latest_session_id,
     run_review,
 )
+from cosmic_cli.rules import load_rules_from_markdown
+from cosmic_cli.shell_guard import check_shell
 from cosmic_cli.ui import DirectivesUI
 
 # Quiet noisy library logs by default; --verbose re-enables agent INFO.
@@ -603,9 +606,54 @@ def analyze_cmd(file_path: str, model: str) -> None:
 
 @cli.command("run")
 @click.argument("command_to_run")
-def run_cmd(command_to_run: str) -> None:
-    """Run a shell command after confirmation."""
+@click.option(
+    "--mode",
+    type=click.Choice(["safe", "interactive", "full"]),
+    default="safe",
+    show_default=True,
+    help="Same blast-radius modes as `do` (full skips local blocklist).",
+)
+def run_cmd(command_to_run: str, mode: str) -> None:
+    """Run a shell command after local policy + blocklist + confirmation.
+
+    Not a side door around compass: COSMIC.md rules and check_shell apply
+    before the human confirm prompt (Claude exercise finding).
+    """
     console.print(f"[red]run:[/red] {command_to_run}")
+
+    # 1. Local COSMIC.md policy (when present)
+    cosmic_md = Path.cwd() / "COSMIC.md"
+    if cosmic_md.is_file() and mode != "full":
+        try:
+            rules = load_rules_from_markdown(cosmic_md)
+            if rules:
+                decision = evaluate_rules(rules, ActionType.SHELL, command_to_run)
+                if decision.disposition == Disposition.WITNESS:
+                    rid = (
+                        decision.matches[0].rule.rule_id
+                        if decision.matches
+                        else "policy"
+                    )
+                    console.print(
+                        f"[red][BLOCKED] local policy WITNESS: {rid}[/red]"
+                    )
+                    sys.exit(4)
+                if decision.disposition == Disposition.PAUSE:
+                    console.print(
+                        "[yellow][BLOCKED] local policy PAUSE — use "
+                        "`cosmic-cli do` for token flow, or --mode full if intentional[/yellow]"
+                    )
+                    sys.exit(4)
+        except Exception as e:
+            console.print(f"[red][BLOCKED] policy load failed: {e}[/red]")
+            sys.exit(4)
+
+    # 2. check_shell
+    blocked = check_shell(command_to_run, exec_mode=mode)
+    if blocked:
+        console.print(f"[red]{blocked}[/red]")
+        sys.exit(4)
+
     if not click.confirm("Proceed?", default=False):
         console.print("[yellow]cancelled[/yellow]")
         return

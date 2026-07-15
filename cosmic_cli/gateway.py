@@ -86,17 +86,20 @@ class ActionGateway:
             )
 
         if decision.disposition == Disposition.PAUSE:
+            if self.approval_manager is None:
+                raise PermissionError(
+                    "PAUSE requires an ApprovalManager — refuse without token validation"
+                )
             if not approval_token_id:
                 raise PermissionError("PAUSE requires valid approval token")
-            if self.approval_manager is not None:
-                # Validate only — consume at execute/commit so later gates
-                # (check_shell, helix) cannot burn a single-use token.
-                if not self.approval_manager.validate(
-                    approval_token_id, decision.evaluated_input_sha256
-                ):
-                    raise PermissionError(
-                        "PAUSE approval token invalid, expired, or already used"
-                    )
+            # Validate only — consume at execute/commit so later gates
+            # (check_shell, helix) cannot burn a single-use token.
+            if not self.approval_manager.validate(
+                approval_token_id, decision.evaluated_input_sha256
+            ):
+                raise PermissionError(
+                    "PAUSE approval token invalid, expired, or already used"
+                )
 
         receipt = AuthorizationReceipt(
             receipt_id=self._mint_receipt_id(),
@@ -116,8 +119,12 @@ class ActionGateway:
         """Consume a PAUSE token after all gates have allowed the action."""
         if receipt.disposition != Disposition.PAUSE:
             return
-        if not receipt.approval_token_id or self.approval_manager is None:
-            return
+        if self.approval_manager is None:
+            raise PermissionError(
+                "PAUSE requires an ApprovalManager — refuse without token consume"
+            )
+        if not receipt.approval_token_id:
+            raise PermissionError("PAUSE requires valid approval token")
         if not self.approval_manager.consume(receipt.approval_token_id):
             raise PermissionError(
                 "PAUSE approval token could not be consumed (already used or store failed)"
@@ -207,10 +214,23 @@ class ApprovalManager:
 
     def _persist(self) -> None:
         try:
+            import os
+
             self._store_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(self._store_path.parent, 0o700)
+            except OSError:
+                pass
             tmp = self._store_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._tokens, indent=2), encoding="utf-8")
+            os.chmod(tmp, 0o600)
             tmp.replace(self._store_path)
+            try:
+                os.chmod(self._store_path, 0o600)
+            except OSError:
+                pass
+        except ApprovalStoreError:
+            raise
         except Exception as e:
             raise ApprovalStoreError(
                 f"cannot write approval store {self._store_path}: {e}"

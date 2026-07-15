@@ -209,21 +209,55 @@ def list_pending(session_id: Optional[str] = None, limit: int = 20) -> Dict[str,
     return call("list_pending", session_id=session_id, limit=limit)
 
 
+_VALID_CLASSIFICATIONS = frozenset({"OPEN", "PAUSE", "WITNESS"})
+
+
 def parse_witness(rpc_result: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize rpc envelope → classification / blocked / token."""
+    """Normalize rpc envelope → classification / blocked / token.
+
+    Fail-closed (Claude exercise 2026-07-15): rpc errors, non-dict results,
+    and unknown classifications are treated as WITNESS blocks — never OPEN.
+    """
     if not rpc_result.get("ok"):
         return {
-            "classification": "OPEN",
-            "blocked": False,
-            "error": rpc_result.get("error"),
+            "classification": "WITNESS",
+            "blocked": True,
+            "error": rpc_result.get("error") or "witness rpc not ok",
+            "reason": f"helix witness fail-closed: {rpc_result.get('error') or 'not ok'}",
+            "fail_closed": True,
             "raw": rpc_result,
         }
-    inner = rpc_result.get("result") or {}
+    inner = rpc_result.get("result")
     if not isinstance(inner, dict):
-        return {"classification": "OPEN", "blocked": False, "raw": rpc_result}
-    cls = (inner.get("classification") or "OPEN").upper()
+        return {
+            "classification": "WITNESS",
+            "blocked": True,
+            "error": "witness result missing or not a dict",
+            "reason": "helix witness fail-closed: malformed result",
+            "fail_closed": True,
+            "raw": rpc_result,
+        }
+    raw_cls = inner.get("classification")
+    if raw_cls is None or str(raw_cls).strip() == "":
+        return {
+            "classification": "WITNESS",
+            "blocked": True,
+            "error": "missing classification",
+            "reason": "helix witness fail-closed: missing classification",
+            "fail_closed": True,
+            "raw": inner,
+        }
+    cls = str(raw_cls).upper()
+    if cls not in _VALID_CLASSIFICATIONS:
+        return {
+            "classification": "WITNESS",
+            "blocked": True,
+            "error": f"unknown classification {raw_cls!r}",
+            "reason": f"helix witness fail-closed: unknown classification {raw_cls!r}",
+            "fail_closed": True,
+            "raw": inner,
+        }
     blocked = bool(inner.get("blocked")) or cls in ("WITNESS", "PAUSE")
-    # After adapter fix, OPEN after consume has blocked=False
     if cls == "OPEN":
         blocked = False
     return {
