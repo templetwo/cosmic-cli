@@ -64,6 +64,35 @@ path; not shipped as package surface.
 
 If a README says "compass protects both ✓" without distinguishing PAUSE, treat that claim as **under-specified**. Prefer this table.
 
+## Convergence (load-bearing)
+
+Refinement converges or it consumes. A target that is fixed, external, and binary
+can be reached; "make it sharper" cannot, and chasing it removes metal until the
+edge is gone. This project refines toward tests, never toward the absence of an
+imaginable weakness. This is Compass honesty turned inward: the same rule that
+forbids claiming a gate that only logs forbids claiming a defect that only exists
+in a reviewer's head.
+
+- **The conformance suite is the terminal reviewer.** Once it is green for a
+  version, a describable weakness is not a defect until it is a failing test or a
+  working reproducer. Imagination is not a finding.
+- **Shipped code freezes on meeting its version's exit criteria.** Frozen code
+  unfreezes only for (a) a red conformance test, or (b) an external report with a
+  working reproducer. Not for a new review pass, a hypothetical, or a refactor
+  itch while someone is already in the file.
+- **Out-of-scope ideas go to the backlog for the next version, the moment they
+  appear.** The working set holds only current-milestone work. Ideas do not die;
+  they queue.
+
+Frozen at v0.8.5 (`aeddf0b`): `policy`, `rules`, `gateway`, `checkpoint`,
+`action_bind`, `tools` path safety, and the `agents` gate paths.
+
+Stop signal: if a change is not required by a current exit criterion, it is
+next-version work, and the next version has not begun.
+
+Non-goal: sharpening past convergence. A fail-closed gate fails closed against its
+own worst habit too.
+
 ## Compass Rules
 
 **Status:** human-readable view loaded by `cosmic_cli.rules.load_rules_from_markdown`
