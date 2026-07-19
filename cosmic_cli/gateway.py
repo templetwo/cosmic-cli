@@ -70,6 +70,44 @@ class ActionGateway:
     def _mint_receipt_id(self) -> str:
         return f"rcpt-{uuid.uuid4().hex[:16]}"
 
+    @staticmethod
+    def _verify_and_seal_content(verify_path: Path, expected_content: bytes) -> None:
+        """Verify written bytes match approval, re-check once, then seal read-only.
+
+        Box 4b / conformance: after verify, a late writer must not stick.
+        Seal (chmod u-w) is the portable in-process half of
+        reap→snapshot→seal→verify→promote for bridge executors later.
+        """
+        exp = hashlib.sha256(expected_content).hexdigest()
+
+        def _read_hex() -> str:
+            try:
+                actual = verify_path.read_bytes() if verify_path.is_file() else b""
+            except OSError as e:
+                raise PermissionError(
+                    f"post-exec content verify failed (unreadable): {e}"
+                ) from e
+            return hashlib.sha256(actual).hexdigest()
+
+        got = _read_hex()
+        if exp != got:
+            raise PermissionError(
+                "post-exec content mismatch — written bytes differ from "
+                "approved content (truncated-hash / swap prevented)"
+            )
+        # Re-verify (settle) — catches a writer that raced the first check.
+        got2 = _read_hex()
+        if exp != got2:
+            raise PermissionError(
+                "post-exec content mismatch on re-verify — non-quiescent write"
+            )
+        # Seal: promote to read-only so post-return late writes cannot stick.
+        try:
+            mode = verify_path.stat().st_mode
+            verify_path.chmod(mode & ~0o222)  # drop write bits
+        except OSError:
+            pass  # best-effort; re-verify already ran
+
     def authorize(
         self,
         action_type: ActionType,
@@ -186,21 +224,7 @@ class ActionGateway:
             result = executor_fn()
 
             if expected_content is not None and verify_path is not None:
-                try:
-                    actual = (
-                        verify_path.read_bytes() if verify_path.is_file() else b""
-                    )
-                except OSError as e:
-                    raise PermissionError(
-                        f"post-exec content verify failed (unreadable): {e}"
-                    ) from e
-                exp = hashlib.sha256(expected_content).hexdigest()
-                got = hashlib.sha256(actual).hexdigest()
-                if exp != got:
-                    raise PermissionError(
-                        "post-exec content mismatch — written bytes differ from "
-                        "approved content (truncated-hash / swap prevented)"
-                    )
+                self._verify_and_seal_content(verify_path, expected_content)
 
             if checkpoint and self.checkpoint_manager:
                 if observed_paths_fn is not None:
@@ -255,15 +279,23 @@ class ApprovalManager:
         )
         self._tokens: Dict[str, dict] = {}
 
+    def _atomic_lock_available(self) -> bool:
+        """fcntl flock is required — never silently unlock (box 4a / conformance)."""
+        return fcntl is not None
+
     def _lock_file(self):
+        if not self._atomic_lock_available():
+            raise ApprovalStoreError(
+                "fcntl unavailable — refuse non-atomic approval store "
+                "(exactly-once requires exclusive lock)"
+            )
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self._lock_path.parent, 0o700)
         except OSError:
             pass
         fh = open(self._lock_path, "a+", encoding="utf-8")
-        if fcntl is not None:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         return fh
 
     def _unlock_file(self, fh) -> None:
@@ -345,7 +377,12 @@ class ApprovalManager:
 
         This is the single root of the exactly-once invariant — closes
         double-fire, burn races, and non-atomic load→set→persist.
+
+        If fcntl is unavailable, refuses (returns False) rather than racing
+        unlocked — box 4a / conformance suite.
         """
+        if not self._atomic_lock_available():
+            return False
         fh = self._lock_file()
         try:
             self._load_unlocked()

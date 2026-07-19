@@ -87,6 +87,11 @@ in a reviewer's head.
 Frozen at v0.8.5 (`aeddf0b`): `policy`, `rules`, `gateway`, `checkpoint`,
 `action_bind`, `tools` path safety, and the `agents` gate paths.
 
+**Unfreeze receipt (v0.8.6):** conformance suite (`tests/test_conformance.py`)
+seated green. Box 4a (fcntl refuse) and 4b (seal-after-verify) were red
+conformance tests — the only legal unfreeze of `gateway.py` under this section —
+then fixed and flipped to pass. Terminal reviewer is seated.
+
 Stop signal: if a change is not required by a current exit criterion, it is
 next-version work, and the next version has not begun.
 
