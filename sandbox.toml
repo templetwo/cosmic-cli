@@ -1,0 +1,27 @@
+# Cosmic L0 shell sandbox floor (privilege ranking)
+#
+# Hierarchy: kernel isolation → privilege ranking → command classification
+# Classification alone is defense-in-depth and is known-evadable (base64|sh).
+# This file declares the load-bearing deny-globs enforced at process launch
+# for cosmic-cli agent shell (agents._run_shell) via cosmic_cli.sandbox.
+#
+# Platform backends:
+#   macOS  — sandbox-exec (Seatbelt) profile
+#   Linux  — best-effort; Landlock when available, else documented gap
+#   other  — no kernel floor; classification + TTY-gate only
+#
+# L2/L3: --mode full skips this floor (explicit blast-radius opt-in).
+
+[floor]
+# Paths L0 shell must not read or write, regardless of command shape.
+deny_globs = [
+  "~/.cosmic-cli",
+  "~/.cosmic-cli/**",
+]
+
+# Human-readable intent (not parsed — see deny_globs).
+intent = "PAUSE token store and operator approval files are below the L0 floor"
+
+[ranking]
+# See COSMIC.md § Ranking and PRIVILEGE_RANKING.md
+# L0 = gated model shell; L2 = operator TTY; approval never flows up.

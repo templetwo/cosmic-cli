@@ -58,21 +58,23 @@ a higher level is the same bug wearing different clothes.
 Do not "patch accept-pause." **Enforce the ranking for the PAUSE approval
 channel:**
 
-1. **The approval channel is L2-only by construction.** `accept-pause`,
+1. **Kernel isolation (load-bearing floor).** `sandbox.toml` deny-glob on
+   `~/.cosmic-cli`; cosmic-cli agent shell launches under Seatbelt
+   (`sandbox-exec`) on macOS so L0 cannot read or write the token store no
+   matter how the command is spelled (`cosmic_cli/sandbox.py`).
+2. **The approval channel is L2-only by construction.** `accept-pause`,
    `show-pause-token`, and `confirm` require an interactive TTY (`isatty`) and
-   refuse otherwise — a non-interactive L0 shell cannot invoke them.
-2. **The token store is below the sandbox floor for L0.** Kernel sandbox
-   deny-globs on `~/.cosmic-cli/*` (Landlock / Seatbelt) — the load-bearing floor
-   the RFC already commits to — so no L0 shell can read the token regardless of
-   how the command is classified.
-3. **Defense in depth: L1 denies the approval surface.** The compass WITNESS-denies
-   any L0 tool call that touches the approval mechanism (the `helix
-   accept-pause|show-pause-token|confirm` commands and shell reads of the token
-   files). Redundant with 1 and 2 by design.
+   refuse otherwise. **There is no env-var break-glass** — a flag L0 can set is
+   itself an L2 credential reachable by L0 (the same bug class).
+3. **Defense in depth: L1 denies the approval surface.** Classification
+   WITNESS-denies approval-surface substrings, base64-decoded fragments, and
+   opaque wrappers (`base64|sh`, `python -c`, `eval`). Alone this layer is
+   known-evadable (audit finding); it is DiD, not the floor.
 
 A conformance test proves the ranking, not just the patch: **an L0 shell action
-cannot cause a PAUSE approval** — the exact reproducer (model runs accept-pause,
-retries, gets allow) must now return deny.
+cannot cause a PAUSE approval** — the plain reproducer (model runs accept-pause,
+retries) returns deny; the base64/interpreter evasion path returns deny at the
+gate; L2 operator-owned `COSMIC_APPROVAL_TOKEN` still OPEN.
 
 ## The ranking is also the collaboration
 

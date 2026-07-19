@@ -761,10 +761,12 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
     approve via `helix confirm <token>`, then retry the action. OPEN proceeds.
 
     Local PAUSE tokens (gate seam) are L2-only (privilege ranking):
-      show-pause-token  — display last minted token (TTY / COSMIC_L2_OPERATOR)
+      show-pause-token  — display last minted token (interactive TTY only)
       accept-pause      — stage token for one approved retry via the wrapper
                           (writes ~/.cosmic-cli/operator_approval_token)
-    L0 agent shells cannot invoke these; see COSMIC.md § Ranking.
+    L0 agent shells cannot invoke these. No env break-glass (that would be an
+    L2 credential L0 can set). Kernel floor: sandbox.toml deny ~/.cosmic-cli.
+    See COSMIC.md § Ranking.
     """
     action = action.lower()
     if action in ("show-pause-token", "accept-pause", "confirm"):

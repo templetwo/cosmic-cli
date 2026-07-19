@@ -1411,15 +1411,31 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             env = os.environ.copy()
             env.setdefault("GRPC_VERBOSITY", "ERROR")
             env.setdefault("GLOG_minloglevel", "2")
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=str(self.root),
-                env=env,
-            )
+            # Privilege ranking floor: L0 shell must not reach ~/.cosmic-cli
+            # (token store). --mode full skips (L2/L3 blast-radius opt-in).
+            if self.exec_mode != "full":
+                from cosmic_cli.sandbox import wrap_argv_for_l0_shell
+
+                argv = wrap_argv_for_l0_shell(cmd)
+                result = subprocess.run(
+                    argv,
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd=str(self.root),
+                    env=env,
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd=str(self.root),
+                    env=env,
+                )
             raw = (result.stdout or "") + (result.stderr or "")
             lines = [
                 ln

@@ -117,18 +117,23 @@ approves its own action or its own level. (Biba integrity / protection rings.)
 L0 the moment it drives a gated shell. A human at a TTY is L2+; a non-interactive
 agent shell is L0, whoever is driving it.
 
-**PAUSE channel is L2-only by construction** (`cosmic_cli/ranking.py`):
+**Enforcement hierarchy** (strongest → weakest):
 
-1. `helix accept-pause` / `show-pause-token` / `confirm` require interactive TTY
-   (or `COSMIC_L2_OPERATOR=1` for scripted L2 seats). L0 exit 4 otherwise.
-2. L1 WITNESS: `check_shell` denies any tool call touching the approval surface
-   (`accept-pause`, token files, `COSMIC_APPROVAL_TOKEN=`).
-3. Token paths are sensitive: L0 READ/WRITE tools cannot open
-   `last_pause_token.json` / `operator_approval_token`.
+1. **Kernel isolation** — `sandbox.toml` deny-glob on `~/.cosmic-cli`; agent
+   shell runs under Seatbelt (`sandbox-exec`) on macOS so L0 cannot read/write
+   the token store regardless of command shape (`cosmic_cli/sandbox.py`).
+2. **Privilege ranking** — `helix accept-pause` / `show-pause-token` / `confirm`
+   require an interactive TTY. L0 exit 4 otherwise. **No env break-glass**
+   (`COSMIC_L2_OPERATOR` removed: a flag L0 can set is an L2 credential L0 can
+   reach — the same bug class as self-approve).
+3. **Command classification (DiD)** — `check_shell` WITNESS on approval-surface
+   substrings, base64-decoded fragments, and opaque wrappers (`base64|sh`,
+   `python -c`, `eval`, …). Alone, this layer is known-evadable; it is not the
+   floor. Token paths are also sensitive for L0 READ/WRITE tools.
 
-**Conformance:** `tests/test_privilege_ranking.py` — the exact self-approval
-reproducer (L0 runs accept-pause, retries) must return **deny**. When that is
-green, the class is closed, not just the instance.
+**Conformance:** `tests/test_privilege_ranking.py` — plain self-approve
+reproducer denies; base64/interpreter evasion through the gate denies; L2 env
+token still OPEN. Kernel floor tests when Seatbelt is present.
 
 Full write-up: `PRIVILEGE_RANKING.md`. Stack standing-law enactment is Anthony's
 (registry via `current_policies()`); this section is project law for the repo.

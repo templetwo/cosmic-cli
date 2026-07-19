@@ -10,19 +10,22 @@ Ranking (high → low):
   L1 cosmic-cli / compass — gates L0; cannot self-approve governance
   L0 gated model / agent shell — acts, approves nothing
 
-Role sets the level, not identity: the same seat is L2 reviewing and L0 when
-driving a gated shell. The PAUSE approval channel must be L2-only.
+Hierarchy of enforcement (strongest → weakest):
+  1. kernel isolation — sandbox.toml deny-glob on ~/.cosmic-cli (sandbox.py)
+  2. privilege ranking — TTY-only approval CLI (this module)
+  3. command classification — substring + decode expansion (DiD, known-evadable
+     alone; kept so the naive path fails closed even without a kernel floor)
 
-This module is the structural hinge for the PAUSE channel — not a patch on
-accept-pause alone. See COSMIC.md § Ranking and PRIVILEGE_RANKING.md.
+Role sets the level, not identity. See COSMIC.md § Ranking, PRIVILEGE_RANKING.md.
 """
 
 from __future__ import annotations
 
-import os
+import base64
+import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Substrings that mean "touching the L2 approval surface from L0 shell".
 # Matched case-insensitively. Always blocked except --mode full (L2/L3 blast).
@@ -35,6 +38,33 @@ APPROVAL_SURFACE_SUBSTR = (
     "local_approvals.json",
     "cosmic_approval_token=",
     "cosmic_approval_token =",
+    ".cosmic-cli/",
+    ".cosmic-cli'",
+    '.cosmic-cli"',
+)
+
+# Opaque / decoder wrappers that hide the real command from substring DiD.
+# Fail-closed in safe+interactive: L0 must not run uninspectable payloads.
+# --mode full skips (L2/L3 blast-radius opt-in).
+_OPAQUE_SHELL = re.compile(
+    r"("
+    r"base64\s+(-[dD]|--decode)|"
+    r"\|\s*(sh|bash|zsh|dash)\b|"
+    r"\b(sh|bash|zsh)\s+-c\b|"
+    r"python3?\s+-c\b|"
+    r"perl\s+-e\b|"
+    r"ruby\s+-e\b|"
+    r"node\s+(-e|--eval)\b|"
+    r"\beval\b|"
+    r"openssl\s+enc\s+-d|"
+    r"xxd\s+-r|"
+    r"/dev/stdin|"
+    r"process\.popen|"
+    r"os\.system\s*\(|"
+    r"subprocess\.(run|call|popen)|"
+    r"commands\.getoutput"
+    r")",
+    re.IGNORECASE,
 )
 
 # Filenames the L0 actor must never READ/WRITE via tool doors.
@@ -47,12 +77,18 @@ APPROVAL_TOKEN_BASENAMES = frozenset(
     }
 )
 
+_B64_BLOB = re.compile(r"[A-Za-z0-9+/]{24,}={0,2}")
+
 
 def is_interactive_l2() -> bool:
     """True when a human/operator TTY is present (L2+ channel).
 
     Non-interactive agent shells (piped stdin, headless PreToolUse children,
     CI) are L0 and must not reach the approval surface.
+
+    There is NO env-var break-glass. A flag L0 can set is an L2 credential
+    reachable by L0 — the same ranking bug as self-approve. Scripted L2 seats
+    must attach a real TTY (ssh -t, script(1), or a human console).
     """
     for stream in (sys.stdin, sys.stderr, sys.stdout):
         try:
@@ -60,9 +96,6 @@ def is_interactive_l2() -> bool:
                 return True
         except Exception:
             continue
-    # Explicit L2/L3 break-glass for scripted operator seats that own the risk.
-    if os.environ.get("COSMIC_L2_OPERATOR", "").strip() in ("1", "true", "yes"):
-        return True
     return False
 
 
@@ -72,22 +105,74 @@ def require_l2_tty(action: str) -> Optional[str]:
         return None
     return (
         f"[BLOCKED] privilege ranking: {action} is L2-only "
-        "(interactive TTY / COSMIC_L2_OPERATOR). "
-        "L0 shells cannot approve their own level."
+        "(interactive TTY required). "
+        "L0 shells cannot approve their own level. "
+        "No env break-glass — that would be an L2 credential L0 can set."
     )
 
 
-def touches_approval_surface(command: str) -> Optional[str]:
-    """If shell/code corpus touches the PAUSE approval channel, return reason."""
+def _decoded_fragments(command: str) -> List[str]:
+    """Best-effort base64 expansion so hidden payloads still hit DiD scan."""
+    frags: List[str] = []
+    for m in _B64_BLOB.finditer(command):
+        blob = m.group(0)
+        # Pad
+        pad = (-len(blob)) % 4
+        try:
+            raw = base64.b64decode(blob + ("=" * pad), validate=False)
+        except Exception:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if not text or not any(c.isalpha() for c in text):
+            continue
+        frags.append(text)
+    return frags
+
+
+def classification_corpus(command: str) -> str:
+    """Command plus decoded fragments — input to surface / opaque checks."""
+    if not command:
+        return ""
+    parts = [command]
+    parts.extend(_decoded_fragments(command))
+    return "\n".join(parts)
+
+
+def is_opaque_shell_wrapper(command: str) -> Optional[str]:
+    """Fail-closed on decoder/interpreter wrappers that hide the real action."""
     if not command:
         return None
-    low = command.lower()
+    if _OPAQUE_SHELL.search(command):
+        return (
+            "[BLOCKED] privilege ranking: opaque shell wrapper "
+            "(base64|sh / interpreter -c / eval). "
+            "Classification cannot see through these; L0 must not use them. "
+            "Use --mode full only as an L2/L3 blast-radius opt-in."
+        )
+    return None
+
+
+def touches_approval_surface(command: str) -> Optional[str]:
+    """If shell/code corpus touches the PAUSE approval channel, return reason.
+
+    Scans the raw command and base64-decoded fragments (DiD). Kernel sandbox
+    is the load-bearing floor; this is the known-partial classifier layer.
+    """
+    if not command:
+        return None
+    opaque = is_opaque_shell_wrapper(command)
+    if opaque:
+        return opaque
+    corpus = classification_corpus(command).lower()
     for pat in APPROVAL_SURFACE_SUBSTR:
-        if pat in low:
+        if pat in corpus:
             return (
                 f"[BLOCKED] privilege ranking: approval surface {pat!r} is L2-only "
-                "(L1 WITNESS). L0 cannot reach accept-pause / token files / "
-                "COSMIC_APPROVAL_TOKEN."
+                "(L1 WITNESS / DiD). L0 cannot reach accept-pause / token files / "
+                "COSMIC_APPROVAL_TOKEN. Kernel floor: sandbox.toml deny ~/.cosmic-cli."
             )
     return None
 
@@ -100,7 +185,6 @@ def is_approval_token_path(path: str) -> bool:
     name = p.name.lower()
     if name in APPROVAL_TOKEN_BASENAMES:
         return True
-    # Any path under ~/.cosmic-cli that looks like an approval artifact
     parts = [x.lower() for x in p.parts]
     if ".cosmic-cli" in parts and (
         "token" in name or "approval" in name or name.endswith(".json.lock")
