@@ -746,6 +746,7 @@ def doctor_cmd() -> None:
             "confirm",
             "pending",
             "show-pause-token",
+            "accept-pause",
         ],
         case_sensitive=False,
     ),
@@ -759,8 +760,11 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
     Compass honesty: WITNESS hard-denies. PAUSE soft-denies with a token —
     approve via `helix confirm <token>`, then retry the action. OPEN proceeds.
 
-    Local PAUSE tokens (non-Helix) are operator-only: `show-pause-token`
-    reads ~/.cosmic-cli/last_pause_token.json (never injected into model context).
+    Local PAUSE tokens (gate seam) are operator-only:
+      show-pause-token  — display last minted token (never model context)
+      accept-pause      — stage token for one approved retry via the wrapper
+                          (writes ~/.cosmic-cli/operator_approval_token; works
+                          even when grok-build does not pass shell env into hooks)
     """
     action = action.lower()
     if action == "show-pause-token":
@@ -779,7 +783,35 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
         console.print(f"[green]token[/green]   {tok}")
         console.print(
             f"[dim]export COSMIC_APPROVAL_TOKEN={tok}[/dim]\n"
+            f"[dim]# or: cosmic-cli helix accept-pause   # file channel for hooks[/dim]\n"
             f"[dim]# or: cosmic-cli helix confirm {tok}[/dim]"
+        )
+        return
+    if action == "accept-pause":
+        # Stage operator approval for one gate retry (file channel).
+        src = Path.home() / ".cosmic-cli" / "last_pause_token.json"
+        dst = Path.home() / ".cosmic-cli" / "operator_approval_token"
+        if not src.is_file():
+            console.print("[yellow]no last_pause_token.json — nothing to accept[/yellow]")
+            sys.exit(1)
+        try:
+            data = json.loads(src.read_text(encoding="utf-8"))
+            tok = (data.get("token") or "").strip()
+            if not tok:
+                console.print("[red]empty token in last_pause_token.json[/red]")
+                sys.exit(1)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_suffix(".tmp")
+            tmp.write_text(tok + "\n", encoding="utf-8")
+            os.chmod(tmp, 0o600)
+            tmp.replace(dst)
+            os.chmod(dst, 0o600)
+        except Exception as e:
+            console.print(f"[red]accept-pause failed: {e}[/red]")
+            sys.exit(1)
+        console.print(
+            f"[green]staged[/green] operator_approval_token for one retry "
+            f"(channel={data.get('channel')}). Re-run the blocked action."
         )
         return
     if action == "status":

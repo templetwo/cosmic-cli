@@ -47,11 +47,16 @@ else
 fi
 export COSMIC_GATE_NONCE="${NONCE}"
 
+# Operator approval: env or one-shot file (for hook envs that drop exports)
+if [[ -z "${COSMIC_APPROVAL_TOKEN:-}" && -f "${HOME}/.cosmic-cli/operator_approval_token" ]]; then
+  export COSMIC_APPROVAL_TOKEN="$(tr -d '[:space:]' < "${HOME}/.cosmic-cli/operator_approval_token")"
+fi
+
 # Opaque envelope bytes — never expand as shell
 INPUT="$(cat)"
 
 set +e
-OUT="$(printf '%s' "${INPUT}" | COSMIC_GATE_NONCE="${NONCE}" cosmic-cli gate --hook grok --mode safe 2>/dev/null)"
+OUT="$(printf '%s' "${INPUT}" | COSMIC_GATE_NONCE="${NONCE}" env COSMIC_APPROVAL_TOKEN="${COSMIC_APPROVAL_TOKEN:-}" cosmic-cli gate --hook grok --mode safe 2>/dev/null)"
 set -e
 
 EXPECTED="COSMIC-ALLOW v1 ${NONCE}"
