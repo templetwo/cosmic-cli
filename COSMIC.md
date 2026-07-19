@@ -84,16 +84,19 @@ in a reviewer's head.
   appear.** The working set holds only current-milestone work. Ideas do not die;
   they queue.
 
-Frozen at v0.8.5 (`aeddf0b`): `policy`, `rules`, `gateway`, `checkpoint`,
+**TERMINAL REVIEWER SEATED** at v0.8.7 (`ba5287f`). Conformance suite
+(`tests/test_conformance.py`) is 8/8 green and is the terminal reviewer for
+these properties. Frozen modules: `policy`, `rules`, `gateway`, `checkpoint`,
 `action_bind`, `tools` path safety, and the `agents` gate paths.
 
-**Unfreeze receipt (v0.8.6–0.8.7):** conformance suite seated green. Box 4a
-(fcntl refuse) and 4b (seal-after-verify) fixed; sequential-mutation regression
-from seal fixed by symmetric un-seal on authorize + writer `u+w` (0.8.7).
-Terminal reviewer is seated — green-then-reproducer is the loop working.
+Prior freeze was v0.8.5 (`aeddf0b`). Legal unfreeze receipts: box 4a/4b red
+tests → fixes; sequential-mutation regression (seal) → seal/un-seal pair.
+Re-frozen at `ba5287f` after soundness pass clean. Imagination is not a finding.
 
 Stop signal: if a change is not required by a current exit criterion, it is
-next-version work, and the next version has not begun.
+next-version work, and the next version has not begun. Hardening of this core
+is done; remaining work is construction (gate verb / wrapper / canary), not
+refinement.
 
 Non-goal: sharpening past convergence. A fail-closed gate fails closed against its
 own worst habit too.
