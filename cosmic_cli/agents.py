@@ -514,11 +514,17 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             def _do_edit():
                 return tool_edit(self.root, path, old, new)
 
+            # Full old/new in action_input — never truncate the hashed binding.
+            pre = (self.root / path).read_text(encoding="utf-8", errors="replace")
+            if old not in pre:
+                return f"[Error] EDIT old_string not found in {path}"
+            expected_post = pre.replace(old, new, 1)
             result = self._run_mutation(
                 ActionType.EDIT,
                 path,
-                f"EDIT {path}\n{old[:400]}\n{new[:400]}",
+                f"EDIT {path}\n{old}\n{new}",
                 _do_edit,
+                expected_content=expected_post.encode("utf-8"),
             )
             if isinstance(result, str):
                 return result
@@ -560,8 +566,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             result = self._run_mutation(
                 ActionType.WRITE,
                 path,
-                f"WRITE {path}\n{content[:800]}",
+                f"WRITE {path}\n{content}",
                 _do_write,
+                expected_content=content.encode("utf-8"),
             )
             if isinstance(result, str):
                 return result
@@ -619,8 +626,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             result = self._run_mutation(
                 ActionType.WRITE,
                 path,
-                f"CREATE {path}\n{content[:800]}",
+                f"CREATE {path}\n{content}",
                 _do_create,
+                expected_content=content.encode("utf-8"),
             )
             if isinstance(result, str):
                 return result
@@ -1078,14 +1086,64 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             self._policy_load_error = None
         return self._policy_rules
 
+    def _paths_touched_since(self, since_unix_ns: int, *, focus: Path) -> List[Path]:
+        """Scan focus directory (and root top-level) for files mtime >= since.
+
+        Used as observed_paths so unrelated-change detection is not a no-op
+        (Claude v3: default observed==intended never fires).
+        """
+        found: List[Path] = []
+        roots = {focus if focus.is_dir() else focus.parent, self.root}
+        for base in roots:
+            try:
+                for p in base.rglob("*"):
+                    if not p.is_file():
+                        continue
+                    if ".cosmicbak" in p.parts or p.name.endswith(".cosmicbak"):
+                        continue
+                    try:
+                        if p.stat().st_mtime_ns >= since_unix_ns:
+                            found.append(p)
+                    except OSError:
+                        continue
+            except OSError:
+                continue
+        if focus not in found:
+            found.append(focus)
+        return found
+
+    def _human_pause_token(self, tok: str, *, channel: str) -> None:
+        """Surface PAUSE token to the human cockpit only — never the model."""
+        msg = (
+            f"[cosmic] PAUSE ({channel}) token for operator only: {tok}\n"
+            f"  re-run with COSMIC_APPROVAL_TOKEN={tok}  "
+            f"or: cosmic-cli helix confirm {tok}"
+        )
+        try:
+            self.ui_callback(msg)
+        except Exception:
+            pass
+        # stderr is not model context
+        try:
+            import sys
+
+            print(msg, file=sys.stderr)
+        except Exception:
+            pass
+
     def _run_mutation(
         self,
         action_type: ActionType,
         path: str,
         action_input: str,
         executor_fn,
+        *,
+        expected_content: Optional[bytes] = None,
     ):
         """Authorize + execute mutation through gateway (checkpoint when available).
+
+        ``action_input`` must contain the FULL concrete content (no truncation)
+        so PAUSE tokens and policy match bind to the real bytes (Claude v3).
 
         Returns executor result, or a [BLOCKED]/[Error] string.
         """
@@ -1099,7 +1157,12 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 f"{self._policy_load_error}"
             )
 
-        intended = [self.root / path]
+        target = self.root / path
+        intended = [target]
+        # Snapshot clock before authorize so we see files touched during exec.
+        import time as _time
+
+        since_ns = _time.time_ns()
         try:
             receipt = self._gateway.authorize(
                 action_type=action_type,
@@ -1109,7 +1172,17 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 executor_name="stargazer",
                 approval_token_id=self.approval_token_id,
             )
-            return self._gateway.execute_with_receipt(receipt, executor_fn)
+            if receipt.checkpoint_manifest is not None:
+                since_ns = receipt.checkpoint_manifest.created_at_unix_ns
+            return self._gateway.execute_with_receipt(
+                receipt,
+                executor_fn,
+                observed_paths_fn=lambda: self._paths_touched_since(
+                    since_ns, focus=target
+                ),
+                expected_content=expected_content,
+                verify_path=target if expected_content is not None else None,
+            )
         except PermissionError as e:
             msg = str(e)
             if "PAUSE" in msg and "token" in msg.lower():
@@ -1121,11 +1194,17 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         )
                     except ApprovalStoreError as se:
                         return f"[BLOCKED] local policy PAUSE — cannot mint token: {se}"
+                    self._human_pause_token(tok, channel=action_type.value)
+                    rid = (
+                        decision.matches[0].rule.rule_id
+                        if decision.matches
+                        else "policy"
+                    )
+                    # Model-visible: no raw token (confused-deputy lock).
                     return (
-                        f"[BLOCKED] local policy PAUSE ({action_type.value}): "
-                        f"{decision.matches[0].rule.rule_id if decision.matches else 'policy'}. "
-                        f"Token: {tok}. Re-run with COSMIC_APPROVAL_TOKEN={tok} "
-                        f"(single-use, action-bound)."
+                        f"[BLOCKED] local policy PAUSE ({action_type.value}): {rid}. "
+                        f"Human approval required — token in cockpit scrollback only "
+                        f"(not shown to model)."
                     )
             return f"[BLOCKED] local policy ({action_type.value}): {msg}"
         except Exception as e:
@@ -1183,10 +1262,11 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                             if decision.matches
                             else "policy"
                         )
+                        self._human_pause_token(tok, channel=kind)
                         return (
                             f"[BLOCKED] local policy PAUSE ({kind}): {rid}. "
-                            f"Token: {tok}. Re-run with COSMIC_APPROVAL_TOKEN={tok} "
-                            f"(single-use, action-bound)."
+                            f"Human approval required — token in cockpit "
+                            f"scrollback only (not shown to model)."
                         )
                     try:
                         if not self._approval_mgr.validate(
@@ -1224,12 +1304,17 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         f"{hdec.get('reason') or 'denied'}"
                     )
                 if cls == "PAUSE" and hdec.get("blocked", True):
-                    tok = hdec.get("pending_token") or "?"
+                    tok = hdec.get("pending_token") or ""
+                    if tok and tok != "?":
+                        self._human_pause_token(tok, channel=f"helix-{kind}")
+                    # Scrub token from model-visible reason (confused deputy).
+                    reason = hdec.get("reason") or "needs confirmation"
+                    if tok and tok in str(reason):
+                        reason = str(reason).replace(tok, "[token-redacted]")
                     return (
-                        f"[BLOCKED] Helix compass PAUSE ({kind}): "
-                        f"{hdec.get('reason') or 'needs confirmation'}. "
-                        f"Approve: cosmic-cli helix confirm {tok} "
-                        f"then re-run the {kind} action (token is single-use)."
+                        f"[BLOCKED] Helix compass PAUSE ({kind}): {reason}. "
+                        f"Human approval required — token in cockpit scrollback "
+                        f"only; operator runs helix confirm from a human seat."
                     )
             except Exception as e:
                 # Fail-closed: never fall through to allow on witness transport /

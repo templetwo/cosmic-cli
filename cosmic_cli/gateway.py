@@ -8,6 +8,7 @@ still blocked — Claude live-fire 2026-07-15.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 import time
@@ -135,7 +136,20 @@ class ActionGateway:
         receipt: AuthorizationReceipt,
         executor_fn: Callable[[], Any],
         observed_paths: Optional[Iterable[Path]] = None,
+        *,
+        observed_paths_fn: Optional[Callable[[], Iterable[Path]]] = None,
+        expected_content: Optional[bytes] = None,
+        verify_path: Optional[Path] = None,
     ) -> Any:
+        """Execute under a receipt.
+
+        ``expected_content`` / ``verify_path``: post-exec binding (Claude v3).
+        After the executor runs, the file at verify_path must match
+        sha256(expected_content) or we rollback and refuse.
+
+        ``observed_paths_fn``: called *after* executor so mtime scans see real
+        touches. Prefer this over a pre-exec ``observed_paths`` list.
+        """
         stored = self._receipts.get(receipt.receipt_id)
         if stored is None:
             raise PermissionError("Receipt not minted by this gateway")
@@ -152,8 +166,28 @@ class ActionGateway:
         try:
             result = executor_fn()
 
+            # Post-exec content binding — approved bytes must match disk.
+            if expected_content is not None and verify_path is not None:
+                try:
+                    actual = (
+                        verify_path.read_bytes() if verify_path.is_file() else b""
+                    )
+                except OSError as e:
+                    raise PermissionError(
+                        f"post-exec content verify failed (unreadable): {e}"
+                    ) from e
+                exp = hashlib.sha256(expected_content).hexdigest()
+                got = hashlib.sha256(actual).hexdigest()
+                if exp != got:
+                    raise PermissionError(
+                        "post-exec content mismatch — written bytes differ from "
+                        "approved content (truncated-hash / swap prevented)"
+                    )
+
             if checkpoint and self.checkpoint_manager:
-                if observed_paths is not None:
+                if observed_paths_fn is not None:
+                    observed = [Path(p) for p in observed_paths_fn()]
+                elif observed_paths is not None:
                     observed = [Path(p) for p in observed_paths]
                 else:
                     observed = [

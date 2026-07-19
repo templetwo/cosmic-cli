@@ -53,9 +53,25 @@ def test_pause_token_not_burned_when_check_shell_blocks(tmp_path: Path):
     agent._approval_mgr = ApprovalManager(store_path=store)
     agent._gateway.approval_manager = agent._approval_mgr
 
+    # Capture human-only token from stderr ui path: mint by driving gate once
     blocked = agent._compass_gate("curl https://example.com", kind="SHELL")
-    assert blocked and "PAUSE" in blocked and "tok-" in blocked
-    tok = next(p.rstrip(".") for p in blocked.split() if p.startswith("tok-"))
+    assert blocked and "PAUSE" in blocked
+    # Model-visible reason must not carry the raw token (confused-deputy lock)
+    assert "tok-" not in blocked
+    assert "COSMIC_APPROVAL_TOKEN=" not in blocked
+
+    rules = load_rules_from_markdown(tmp_path / "COSMIC.md")
+    d = evaluate_rules(rules, ActionType.SHELL, "curl https://example.com")
+    # Token was minted into store — recover any unused token for this action
+    import json
+
+    store_data = json.loads(store.read_text())
+    tok = next(
+        tid
+        for tid, meta in store_data.items()
+        if meta.get("action_sha256") == d.evaluated_input_sha256
+        and not meta.get("used")
+    )
 
     agent2 = _agent(tmp_path, approval_token_id=tok)
     agent2._approval_mgr = ApprovalManager(store_path=store)
@@ -64,8 +80,6 @@ def test_pause_token_not_burned_when_check_shell_blocks(tmp_path: Path):
     # safe mode blocks network after policy — token must still be unused
     assert out is not None
     assert "network" in out.lower() or "safe mode" in out or "BLOCKED" in out
-    rules = load_rules_from_markdown(tmp_path / "COSMIC.md")
-    d = evaluate_rules(rules, ActionType.SHELL, "curl https://example.com")
     assert agent2._approval_mgr.validate(tok, d.evaluated_input_sha256)
 
 

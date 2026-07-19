@@ -82,10 +82,10 @@ all matches reported; unknown dispositions rejected at load. Local PAUSE mints a
 single-use action-bound token (`COSMIC_APPROVAL_TOKEN`); Helix PAUSE still uses
 `cosmic-cli helix confirm <token>`.
 
-**Avionics stack (v0.8.2):** full residual close-out from live-fire exercise.
-COSMIC.md self-edit blocked; `cosmic-cli run` uses policy + check_shell;
-Helix unknown envelopes fail-closed; PAUSE requires ApprovalManager;
-approval store mode 0600; self-correction budgets **attempts** not bookkeeping.
+**Avionics stack (v0.8.4):** mutation PAUSE/policy bind to **full** content
+(not `[:800]` previews); post-exec content-sha verify + rollback on mismatch;
+observed_paths scanned after write; PAUSE tokens scrollback-only (never in
+model-visible deny reason — confused-deputy lock).
 
 ## Memory
 
