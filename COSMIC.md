@@ -99,14 +99,23 @@ is done; remaining work is construction, not refinement.
 
 ## Sentinel (v0.9 construction)
 
-**Box 1 landed:** `cosmic-cli gate --hook {grok,claude}` — COSMIC-ALLOW v1
-sentinel. Reads PreToolUse JSON on stdin; stdout is **only**
-`COSMIC-ALLOW v1 <nonce>` on genuine OPEN (nonce from `COSMIC_GATE_NONCE` only).
-Deny = empty stdout. Frozen avionics called, not modified. See
-`cosmic_cli/gate.py` and `tests/test_gate_verb.py`.
+**Box 1:** `cosmic-cli gate --hook {grok,claude}` — COSMIC-ALLOW v1 sentinel
+(`cosmic_cli/gate.py`).
 
-Still construction (not this section's freeze): boot canary, wrapper install,
-PAUSE at the gate seam, checkpoint-in-gate, live Helix leg.
+**Box 2+3 landed:** positive-protocol PreToolUse wrapper + boot canary.
+
+```bash
+cosmic-cli init --grok --force          # install global hook + wrapper
+cosmic-cli gate --boot-canary           # 4 deny + 1 allow; refuse if silent/broken
+~/.cosmic-cli/hooks/cosmic-launch-grok.sh   # canary then exec grok
+```
+
+- Wrapper: deny unless entire stdout equals `COSMIC-ALLOW v1 <nonce>` (stderr discarded).
+- Canary: shell/write/read/MCP must empty stdout; grep must emit sentinel.
+- Live-verified: `rm -rf` → Hook denied (no sentinel); boot canary PASS.
+
+Still construction: PAUSE at the gate seam, checkpoint-in-gate, live Helix leg,
+deposit packaging.
 
 Non-goal: sharpening past convergence. A fail-closed gate fails closed against its
 own worst habit too.

@@ -849,12 +849,28 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
 @click.argument("directory", required=False, default=".")
 @click.option("--force", is_flag=True, help="Overwrite existing COSMIC.md")
 @click.option("--name", default="COSMIC.md", show_default=True)
-def init_cmd(directory: str, force: bool, name: str) -> None:
-    """Drop COSMIC.md agent notes into a project (no stack)."""
+@click.option(
+    "--grok",
+    is_flag=True,
+    help="Install global Grok Build PreToolUse wrapper + boot canary assets (box 2).",
+)
+def init_cmd(directory: str, force: bool, name: str, grok: bool) -> None:
+    """Drop COSMIC.md agent notes into a project (no stack).
+
+    With ``--grok``: install the always-trusted global PreToolUse hook that
+    calls ``cosmic-cli gate --hook grok`` under the positive COSMIC-ALLOW protocol.
+    """
     msg, ok = write_init(Path(directory), force=force, name=name)
     console.print(f"[{'green' if ok else 'red'}]{msg}[/]")
     if not ok:
         sys.exit(1)
+    if grok:
+        from cosmic_cli.install_grok_hooks import install_grok_hooks
+
+        imsg, iok = install_grok_hooks(force=force)
+        console.print(f"[{'green' if iok else 'red'}]{imsg}[/]")
+        if not iok:
+            sys.exit(1)
 
 
 @cli.command("sessions")
@@ -972,19 +988,30 @@ def workflow(tasks, model: str) -> None:
 )
 @click.option("--verb-check", is_flag=True, help="Existence probe for the wrapper; exit 0.")
 @click.option(
+    "--boot-canary",
+    is_flag=True,
+    help="Box 3: deny+allow canaries against the real gate; exit 1 on fail.",
+)
+@click.option(
     "--mode",
     type=click.Choice(["safe", "interactive", "full"]),
     default="safe",
     show_default=True,
 )
-def gate_cmd(hook: str, verb_check: bool, mode: str) -> None:
+def gate_cmd(hook: str, verb_check: bool, boot_canary: bool, mode: str) -> None:
     """COSMIC-ALLOW sentinel gate (RFC v1.1).
 
     Reads a cockpit PreToolUse envelope on stdin and emits
     `COSMIC-ALLOW v1 <nonce>` on stdout ONLY for a genuine OPEN decision. Deny is
     signaled by an empty stdout; all diagnostics go to stderr. The nonce comes
     from COSMIC_GATE_NONCE only, never the payload.
+
+    ``--boot-canary`` runs the launcher pre-flight (box 3) and exits 0/1.
     """
+    if boot_canary:
+        from cosmic_cli.boot_canary import run_boot_canary
+
+        raise SystemExit(run_boot_canary())
     from cosmic_cli.gate import run_gate
 
     raise SystemExit(run_gate(hook=hook, verb_check=verb_check, exec_mode=mode))

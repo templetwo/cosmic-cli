@@ -73,11 +73,19 @@ def classify(tool_name: str, tool_input: dict) -> Tuple[str, ActionType | None, 
     if tool_name in _SHELL:
         return ("gate", ActionType.SHELL, _extract(tool_input, "command", "cmd", "script"))
     if tool_name in _MUTATE:
-        path = _extract(tool_input, "path", "file_path", "filePath")
+        path = _extract(
+            tool_input, "path", "file_path", "filePath", "target_file"
+        )
         body = _extract(tool_input, "content", "new_string", "new_str", "text")
         return ("gate", ActionType.WRITE, f"{path}\n{body}")
     if tool_name in _READ:
-        return ("gate", ActionType.READ, _extract(tool_input, "path", "file_path", "filePath"))
+        return (
+            "gate",
+            ActionType.READ,
+            _extract(
+                tool_input, "path", "file_path", "filePath", "target_file"
+            ),
+        )
     # MCP qualified name (server__tool) or anything unknown: deny-by-default.
     return ("deny", None, "")
 
@@ -100,7 +108,9 @@ def decide(envelope: dict, rules, exec_mode: str = "safe") -> Optional[str]:
 
     # Sensitive-path refusal for the read/write classes (unification table).
     if action_type in (ActionType.READ, ActionType.WRITE):
-        path = _extract(tool_input, "path", "file_path", "filePath")
+        path = _extract(
+            tool_input, "path", "file_path", "filePath", "target_file"
+        )
         if path and (is_sensitive_path(path) or is_sensitive_path(Path(path).name)):
             raise _Deny(f"sensitive-path {action_type.value} refused")
 
