@@ -82,10 +82,10 @@ all matches reported; unknown dispositions rejected at load. Local PAUSE mints a
 single-use action-bound token (`COSMIC_APPROVAL_TOKEN`); Helix PAUSE still uses
 `cosmic-cli helix confirm <token>`.
 
-**Avionics stack (v0.8.4):** mutation PAUSE/policy bind to **full** content
-(not `[:800]` previews); post-exec content-sha verify + rollback on mismatch;
-observed_paths scanned after write; PAUSE tokens scrollback-only (never in
-model-visible deny reason — confused-deputy lock).
+**Avionics stack (v0.8.5):** **exactly-once PAUSE** (`claim_once` under flock);
+canonical length/hash EDIT·WRITE bindings (no newline collision); operator
+token file `~/.cosmic-cli/last_pause_token.json` via `helix show-pause-token`
+(never model return / stderr / ui_callback).
 
 ## Memory
 

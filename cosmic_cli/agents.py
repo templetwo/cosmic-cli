@@ -21,6 +21,7 @@ from xai_sdk import Client
 from xai_sdk.chat import user
 
 from cosmic_cli.context import ContextManager
+from cosmic_cli.action_bind import bind_edit, bind_mkdir, bind_write
 from cosmic_cli.checkpoint import CheckpointManager
 from cosmic_cli.gateway import ActionGateway, ApprovalManager, ApprovalStoreError
 from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
@@ -514,17 +515,26 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             def _do_edit():
                 return tool_edit(self.root, path, old, new)
 
-            # Full old/new in action_input — never truncate the hashed binding.
+            # Canonical length/hash binding — never raw newline-joined fields
+            # (Claude EDIT collision).
             pre = (self.root / path).read_text(encoding="utf-8", errors="replace")
             if old not in pre:
                 return f"[Error] EDIT old_string not found in {path}"
             expected_post = pre.replace(old, new, 1)
+            binding = bind_edit(
+                path=path,
+                pre_content=pre,
+                old=old,
+                new=new,
+                post_content=expected_post,
+            )
             result = self._run_mutation(
                 ActionType.EDIT,
                 path,
-                f"EDIT {path}\n{old}\n{new}",
+                binding,
                 _do_edit,
                 expected_content=expected_post.encode("utf-8"),
+                match_input=f"EDIT {path}\n{old}\n{new}",
             )
             if isinstance(result, str):
                 return result
@@ -566,9 +576,10 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             result = self._run_mutation(
                 ActionType.WRITE,
                 path,
-                f"WRITE {path}\n{content}",
+                bind_write(path=path, content=content),
                 _do_write,
                 expected_content=content.encode("utf-8"),
+                match_input=f"WRITE {path}\n{content}",
             )
             if isinstance(result, str):
                 return result
@@ -596,7 +607,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             result = self._run_mutation(
                 ActionType.WRITE,
                 path,
-                f"MKDIR {path}",
+                bind_mkdir(path=path),
                 _do_mkdir,
             )
             if isinstance(result, str):
@@ -626,9 +637,10 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             result = self._run_mutation(
                 ActionType.WRITE,
                 path,
-                f"CREATE {path}\n{content}",
+                bind_write(path=path, content=content),
                 _do_create,
                 expected_content=content.encode("utf-8"),
+                match_input=f"CREATE {path}\n{content}",
             )
             if isinstance(result, str):
                 return result
@@ -1112,22 +1124,48 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             found.append(focus)
         return found
 
-    def _human_pause_token(self, tok: str, *, channel: str) -> None:
-        """Surface PAUSE token to the human cockpit only — never the model."""
-        msg = (
-            f"[cosmic] PAUSE ({channel}) token for operator only: {tok}\n"
-            f"  re-run with COSMIC_APPROVAL_TOKEN={tok}  "
-            f"or: cosmic-cli helix confirm {tok}"
+    def _human_pause_token(self, tok: str, *, channel: str, action_sha: str = "") -> None:
+        """Operator-only PAUSE token channel (confused-deputy + stderr hygiene).
+
+        Never writes the raw token to model-visible returns, ui_callback, or
+        stderr (shell/code observations merge stderr into model context).
+        Token lives only in a 0600 file; operator retrieves via:
+          cosmic-cli helix show-pause-token
+        """
+        import json
+        from datetime import datetime, timezone
+
+        store = Path.home() / ".cosmic-cli" / "last_pause_token.json"
+        try:
+            store.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(store.parent, 0o700)
+            except OSError:
+                pass
+            payload = {
+                "token": tok,
+                "channel": channel,
+                "action_sha256": action_sha,
+                "minted_at": datetime.now(timezone.utc).isoformat(),
+                "session_id": getattr(self, "session_id", None),
+            }
+            tmp = store.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.chmod(tmp, 0o600)
+            tmp.replace(store)
+            try:
+                os.chmod(store, 0o600)
+            except OSError:
+                pass
+        except Exception as e:
+            logger.warning("could not write operator pause token file: %s", e)
+        # Human tip without token (safe if ui_callback or stderr is scraped)
+        tip = (
+            f"[cosmic] PAUSE ({channel}): human approval required. "
+            f"Operator: cosmic-cli helix show-pause-token"
         )
         try:
-            self.ui_callback(msg)
-        except Exception:
-            pass
-        # stderr is not model context
-        try:
-            import sys
-
-            print(msg, file=sys.stderr)
+            self.ui_callback(tip)
         except Exception:
             pass
 
@@ -1139,11 +1177,12 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         executor_fn,
         *,
         expected_content: Optional[bytes] = None,
+        match_input: Optional[str] = None,
     ):
         """Authorize + execute mutation through gateway (checkpoint when available).
 
-        ``action_input`` must contain the FULL concrete content (no truncation)
-        so PAUSE tokens and policy match bind to the real bytes (Claude v3).
+        ``action_input`` is the **canonical binding** (token commitment).
+        ``match_input`` is the policy pattern corpus (full path+content text).
 
         Returns executor result, or a [BLOCKED]/[Error] string.
         """
@@ -1159,10 +1198,10 @@ Do not READ .env, *.pem, id_rsa, or credential files.
 
         target = self.root / path
         intended = [target]
-        # Snapshot clock before authorize so we see files touched during exec.
         import time as _time
 
         since_ns = _time.time_ns()
+        corpus = match_input if match_input is not None else action_input
         try:
             receipt = self._gateway.authorize(
                 action_type=action_type,
@@ -1171,6 +1210,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 intended_paths=intended if self._checkpoint_mgr else None,
                 executor_name="stargazer",
                 approval_token_id=self.approval_token_id,
+                match_input=match_input,
             )
             if receipt.checkpoint_manifest is not None:
                 since_ns = receipt.checkpoint_manifest.created_at_unix_ns
@@ -1186,25 +1226,30 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         except PermissionError as e:
             msg = str(e)
             if "PAUSE" in msg and "token" in msg.lower():
-                decision = evaluate_rules(rules, action_type, action_input)
+                decision = evaluate_rules(rules, action_type, corpus)
                 if decision.disposition == Disposition.PAUSE:
+                    # Mint against binding commitment, not match corpus.
+                    import hashlib as _hl
+
+                    commitment = _hl.sha256(action_input.encode("utf-8")).hexdigest()
                     try:
-                        tok = self._approval_mgr.mint_token(
-                            decision.evaluated_input_sha256
-                        )
+                        tok = self._approval_mgr.mint_token(commitment)
                     except ApprovalStoreError as se:
                         return f"[BLOCKED] local policy PAUSE — cannot mint token: {se}"
-                    self._human_pause_token(tok, channel=action_type.value)
+                    self._human_pause_token(
+                        tok,
+                        channel=action_type.value,
+                        action_sha=commitment,
+                    )
                     rid = (
                         decision.matches[0].rule.rule_id
                         if decision.matches
                         else "policy"
                     )
-                    # Model-visible: no raw token (confused-deputy lock).
                     return (
                         f"[BLOCKED] local policy PAUSE ({action_type.value}): {rid}. "
-                        f"Human approval required — token in cockpit scrollback only "
-                        f"(not shown to model)."
+                        f"Human approval required — "
+                        f"`cosmic-cli helix show-pause-token` (token not shown to model)."
                     )
             return f"[BLOCKED] local policy ({action_type.value}): {msg}"
         except Exception as e:
@@ -1262,11 +1307,16 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                             if decision.matches
                             else "policy"
                         )
-                        self._human_pause_token(tok, channel=kind)
+                        self._human_pause_token(
+                            tok,
+                            channel=kind,
+                            action_sha=decision.evaluated_input_sha256,
+                        )
                         return (
                             f"[BLOCKED] local policy PAUSE ({kind}): {rid}. "
-                            f"Human approval required — token in cockpit "
-                            f"scrollback only (not shown to model)."
+                            f"Human approval required — use "
+                            f"`cosmic-cli helix show-pause-token` (token not "
+                            f"shown to model)."
                         )
                     try:
                         if not self._approval_mgr.validate(
@@ -1306,15 +1356,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 if cls == "PAUSE" and hdec.get("blocked", True):
                     tok = hdec.get("pending_token") or ""
                     if tok and tok != "?":
-                        self._human_pause_token(tok, channel=f"helix-{kind}")
-                    # Scrub token from model-visible reason (confused deputy).
+                        self._human_pause_token(
+                            tok,
+                            channel=f"helix-{kind}",
+                            action_sha=str(hdec.get("action_summary") or "")[:64],
+                        )
                     reason = hdec.get("reason") or "needs confirmation"
                     if tok and tok in str(reason):
                         reason = str(reason).replace(tok, "[token-redacted]")
                     return (
                         f"[BLOCKED] Helix compass PAUSE ({kind}): {reason}. "
-                        f"Human approval required — token in cockpit scrollback "
-                        f"only; operator runs helix confirm from a human seat."
+                        f"Human approval required — "
+                        f"`cosmic-cli helix show-pause-token` then confirm "
+                        f"from a human seat (token not shown to model)."
                     )
             except Exception as e:
                 # Fail-closed: never fall through to allow on witness transport /
@@ -1324,22 +1378,24 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     f"[BLOCKED] Helix compass fail-closed ({kind}): {e}"
                 )
 
-        # 4. All gates open — consume local PAUSE token now
+        # 4. All gates open — atomic claim_once (exactly one action, once)
         if (
             decision is not None
             and decision.disposition == Disposition.PAUSE
             and self.approval_token_id
         ):
             try:
-                if not self._approval_mgr.consume(self.approval_token_id):
+                if not self._approval_mgr.claim_once(
+                    self.approval_token_id, decision.evaluated_input_sha256
+                ):
                     return (
                         f"[BLOCKED] local policy PAUSE ({kind}): "
-                        f"token could not be consumed"
+                        f"token already consumed or invalid (exactly-once)"
                     )
             except ApprovalStoreError as se:
                 return (
                     f"[BLOCKED] local policy PAUSE ({kind}): "
-                    f"approval store error on consume: {se}"
+                    f"approval store error on claim: {se}"
                 )
         return None
 

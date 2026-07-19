@@ -1,15 +1,18 @@
 """Mandatory Action Gateway — authorize → receipt → execute.
 
-PAUSE tokens are validated at authorize and consumed only when the action
-is fully allowed (execute_with_receipt, or explicit commit after later gates).
-Consuming at authorize burned tokens when a later gate (e.g. check_shell)
-still blocked — Claude live-fire 2026-07-15.
+PAUSE invariant (one named thing, three surfaces closed):
+  **Exactly one action, exactly once.**
+
+  Tokens are action-bound (sha of canonical binding) and consumed under an
+  exclusive flock so double-fire, non-atomic load→set→persist races, and
+  dual-process burns cannot mint two executions from one approval.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 import time
 import uuid
@@ -17,8 +20,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from cosmic_cli.checkpoint import CheckpointError, CheckpointManager, CheckpointManifest
+from cosmic_cli.checkpoint import CheckpointManager, CheckpointManifest
 from cosmic_cli.policy import ActionType, Disposition, PolicyDecision
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover — Windows
+    fcntl = None  # type: ignore
 
 
 class ApprovalStoreError(RuntimeError):
@@ -70,10 +78,29 @@ class ActionGateway:
         intended_paths: Optional[List[Path]] = None,
         executor_name: str = "unknown",
         approval_token_id: Optional[str] = None,
+        *,
+        match_input: Optional[str] = None,
     ) -> AuthorizationReceipt:
+        """Authorize an action.
+
+        ``action_input`` is the **commitment** string (canonical binding);
+        its sha256 is what PAUSE tokens bind to.
+
+        ``match_input`` (optional) is the corpus policy patterns scan. When
+        set, rules match against match_input but the token still binds to
+        sha256(action_input) — so content rules fire while EDIT/WRITE
+        bindings stay length/hash-safe.
+        """
+        from dataclasses import replace as dc_replace
+
+        corpus = match_input if match_input is not None else action_input
         decision: PolicyDecision = self.policy_evaluator(
-            policy_rules, action_type, action_input
+            policy_rules, action_type, corpus
         )
+        # Token/commitment always over action_input (binding), not the match corpus.
+        if match_input is not None:
+            commitment = hashlib.sha256(action_input.encode("utf-8")).hexdigest()
+            decision = dc_replace(decision, evaluated_input_sha256=commitment)
 
         checkpoint: Optional[CheckpointManifest] = None
         if self.checkpoint_manager and intended_paths:
@@ -93,8 +120,6 @@ class ActionGateway:
                 )
             if not approval_token_id:
                 raise PermissionError("PAUSE requires valid approval token")
-            # Validate only — consume at execute/commit so later gates
-            # (check_shell, helix) cannot burn a single-use token.
             if not self.approval_manager.validate(
                 approval_token_id, decision.evaluated_input_sha256
             ):
@@ -117,7 +142,7 @@ class ActionGateway:
         return receipt
 
     def commit_pause_token(self, receipt: AuthorizationReceipt) -> None:
-        """Consume a PAUSE token after all gates have allowed the action."""
+        """Atomic single-use claim: exactly one action, exactly once."""
         if receipt.disposition != Disposition.PAUSE:
             return
         if self.approval_manager is None:
@@ -126,9 +151,13 @@ class ActionGateway:
             )
         if not receipt.approval_token_id:
             raise PermissionError("PAUSE requires valid approval token")
-        if not self.approval_manager.consume(receipt.approval_token_id):
+        # claim_once is transactional (flock + used=0 CAS).
+        if not self.approval_manager.claim_once(
+            receipt.approval_token_id, receipt.action_sha256
+        ):
             raise PermissionError(
-                "PAUSE approval token could not be consumed (already used or store failed)"
+                "PAUSE approval already consumed or invalid "
+                "(exactly-once invariant)"
             )
 
     def execute_with_receipt(
@@ -141,15 +170,6 @@ class ActionGateway:
         expected_content: Optional[bytes] = None,
         verify_path: Optional[Path] = None,
     ) -> Any:
-        """Execute under a receipt.
-
-        ``expected_content`` / ``verify_path``: post-exec binding (Claude v3).
-        After the executor runs, the file at verify_path must match
-        sha256(expected_content) or we rollback and refuse.
-
-        ``observed_paths_fn``: called *after* executor so mtime scans see real
-        touches. Prefer this over a pre-exec ``observed_paths`` list.
-        """
         stored = self._receipts.get(receipt.receipt_id)
         if stored is None:
             raise PermissionError("Receipt not minted by this gateway")
@@ -158,7 +178,6 @@ class ActionGateway:
         if stored.executor != receipt.executor:
             raise PermissionError("Executor identity mismatch")
 
-        # Consume PAUSE only when we are about to run for real.
         self.commit_pause_token(stored)
 
         checkpoint = stored.checkpoint_manifest
@@ -166,7 +185,6 @@ class ActionGateway:
         try:
             result = executor_fn()
 
-            # Post-exec content binding — approved bytes must match disk.
             if expected_content is not None and verify_path is not None:
                 try:
                     actual = (
@@ -219,7 +237,12 @@ class ActionGateway:
 
 
 class ApprovalManager:
-    """Single-use, action-bound PAUSE tokens with fail-closed persistence."""
+    """Exactly-once, action-bound PAUSE tokens.
+
+    All store mutations (mint / validate / claim_once) hold an exclusive flock
+    on ``store_path.lock`` around load→mutate→persist so concurrent processes
+    cannot double-spend a token.
+    """
 
     def __init__(self, store_path: Optional[Path] = None):
         self._store_path = Path(
@@ -227,10 +250,30 @@ class ApprovalManager:
             if store_path is not None
             else Path.home() / ".cosmic-cli" / "local_approvals.json"
         )
+        self._lock_path = self._store_path.with_suffix(
+            self._store_path.suffix + ".lock"
+        )
         self._tokens: Dict[str, dict] = {}
-        self._load()
 
-    def _load(self) -> None:
+    def _lock_file(self):
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self._lock_path.parent, 0o700)
+        except OSError:
+            pass
+        fh = open(self._lock_path, "a+", encoding="utf-8")
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        return fh
+
+    def _unlock_file(self, fh) -> None:
+        try:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+    def _load_unlocked(self) -> None:
         if not self._store_path.is_file():
             self._tokens = {}
             return
@@ -246,10 +289,8 @@ class ApprovalManager:
                 f"cannot read approval store {self._store_path}: {e}"
             ) from e
 
-    def _persist(self) -> None:
+    def _persist_unlocked(self) -> None:
         try:
-            import os
-
             self._store_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 os.chmod(self._store_path.parent, 0o700)
@@ -263,56 +304,90 @@ class ApprovalManager:
                 os.chmod(self._store_path, 0o600)
             except OSError:
                 pass
-        except ApprovalStoreError:
-            raise
         except Exception as e:
             raise ApprovalStoreError(
                 f"cannot write approval store {self._store_path}: {e}"
             ) from e
 
     def mint_token(self, action_sha256: str, ttl_seconds: int = 300) -> str:
-        self._load()
-        token_id = f"tok-{secrets.token_hex(8)}"
-        self._tokens[token_id] = {
-            "action_sha256": action_sha256,
-            "expiry": time.time() + ttl_seconds,
-            "used": False,
-        }
-        self._persist()
-        return token_id
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            token_id = f"tok-{secrets.token_hex(8)}"
+            self._tokens[token_id] = {
+                "action_sha256": action_sha256,
+                "expiry": time.time() + ttl_seconds,
+                "used": False,
+            }
+            self._persist_unlocked()
+            return token_id
+        finally:
+            self._unlock_file(fh)
 
     def validate(self, token_id: str, current_action_sha256: str) -> bool:
-        """Check token is valid for this action without consuming it."""
-        self._load()
-        tok = self._tokens.get(token_id)
-        if not tok:
-            return False
-        if tok.get("used") or time.time() > float(tok.get("expiry", 0)):
-            return False
-        if tok.get("action_sha256") != current_action_sha256:
-            return False
-        return True
+        """Check token is valid for this action without consuming it (under lock)."""
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            tok = self._tokens.get(token_id)
+            if not tok:
+                return False
+            if tok.get("used") or time.time() > float(tok.get("expiry", 0)):
+                return False
+            if tok.get("action_sha256") != current_action_sha256:
+                return False
+            return True
+        finally:
+            self._unlock_file(fh)
+
+    def claim_once(self, token_id: str, current_action_sha256: str) -> bool:
+        """Transactional consume: CAS used=false→true under exclusive flock.
+
+        This is the single root of the exactly-once invariant — closes
+        double-fire, burn races, and non-atomic load→set→persist.
+        """
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            tok = self._tokens.get(token_id)
+            if not tok:
+                return False
+            if tok.get("used"):
+                return False
+            if time.time() > float(tok.get("expiry", 0)):
+                return False
+            if tok.get("action_sha256") != current_action_sha256:
+                # Wrong action: burn so the token cannot be retried elsewhere
+                tok["used"] = True
+                self._persist_unlocked()
+                return False
+            tok["used"] = True
+            self._persist_unlocked()
+            return True
+        finally:
+            self._unlock_file(fh)
 
     def consume(self, token_id: str) -> bool:
-        """Mark token used. Fails closed if store cannot persist."""
-        self._load()
-        tok = self._tokens.get(token_id)
-        if not tok or tok.get("used"):
-            return False
-        tok["used"] = True
-        self._persist()
-        return True
+        """Legacy: mark used without re-checking action binding.
+
+        Prefer ``claim_once`` for the exactly-once path. Kept for callers that
+        already validated under the same process.
+        """
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            tok = self._tokens.get(token_id)
+            if not tok or tok.get("used"):
+                return False
+            tok["used"] = True
+            self._persist_unlocked()
+            return True
+        finally:
+            self._unlock_file(fh)
 
     def validate_and_consume(self, token_id: str, current_action_sha256: str) -> bool:
-        """Legacy one-shot: validate then consume (fail-closed)."""
-        if not self.validate(token_id, current_action_sha256):
-            # Mutation / wrong action — burn if present
-            self._load()
-            if token_id in self._tokens:
-                self._tokens[token_id]["used"] = True
-                self._persist()
-            return False
-        return self.consume(token_id)
+        """One-shot validate+claim (exactly-once)."""
+        return self.claim_once(token_id, current_action_sha256)
 
     def present_for_witness(self, decision: "PolicyDecision", action_input: str) -> dict:
         return {

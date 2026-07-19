@@ -745,6 +745,7 @@ def doctor_cmd() -> None:
             "record",
             "confirm",
             "pending",
+            "show-pause-token",
         ],
         case_sensitive=False,
     ),
@@ -757,8 +758,30 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
 
     Compass honesty: WITNESS hard-denies. PAUSE soft-denies with a token —
     approve via `helix confirm <token>`, then retry the action. OPEN proceeds.
+
+    Local PAUSE tokens (non-Helix) are operator-only: `show-pause-token`
+    reads ~/.cosmic-cli/last_pause_token.json (never injected into model context).
     """
     action = action.lower()
+    if action == "show-pause-token":
+        tok_path = Path.home() / ".cosmic-cli" / "last_pause_token.json"
+        if not tok_path.is_file():
+            console.print("[yellow]no local PAUSE token on file[/yellow]")
+            sys.exit(1)
+        try:
+            data = json.loads(tok_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            console.print(f"[red]cannot read token file: {e}[/red]")
+            sys.exit(1)
+        tok = data.get("token") or ""
+        console.print(f"[dim]channel[/dim] {data.get('channel')}")
+        console.print(f"[dim]minted[/dim]  {data.get('minted_at')}")
+        console.print(f"[green]token[/green]   {tok}")
+        console.print(
+            f"[dim]export COSMIC_APPROVAL_TOKEN={tok}[/dim]\n"
+            f"[dim]# or: cosmic-cli helix confirm {tok}[/dim]"
+        )
+        return
     if action == "status":
         console.print(f"[dim]T2HELIX_ROOT[/dim] {helix_bridge.resolve_t2helix_root()}")
         console.print(f"[dim]T2HELIX_DATA_DIR[/dim] {helix_bridge.resolve_data_dir()}")
