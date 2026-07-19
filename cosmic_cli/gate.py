@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
+from cosmic_cli.gateway import ApprovalManager
 from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.rules import load_rules_from_markdown
 from cosmic_cli.secrets import is_sensitive_path
@@ -117,16 +118,74 @@ def decide(envelope: dict, rules, exec_mode: str = "safe") -> Optional[str]:
     decision = evaluate_rules(rules, action_type, corpus)
     if decision.disposition == Disposition.WITNESS:
         raise _Deny(f"WITNESS ({action_type.value}): blocked by compass rule")
-    if decision.disposition == Disposition.PAUSE:
-        # box 1: PAUSE requires human approval — no sentinel, fail-closed at the seam.
-        raise _Deny(f"PAUSE ({action_type.value}): needs human approval")
 
-    # OPEN. For the shell class, the blocklist is a second, non-fail-open gate.
+    # Shell blocklist BEFORE any PAUSE-token handling, so a PAUSE token is never
+    # minted or consumed for a command check_shell will reject anyway (the
+    # token-burn lesson from the agent loop, applied at the seam).
     if action_type in (ActionType.SHELL, ActionType.CODE):
         blocked = check_shell(corpus, exec_mode=exec_mode)
         if blocked:
             raise _Deny(f"check_shell: {blocked}")
+
+    if decision.disposition == Disposition.PAUSE:
+        return _pause_at_seam(action_type, decision.evaluated_input_sha256)
+
     return None  # genuine OPEN
+
+
+def _write_operator_pause_token(tok: str, channel: str, action_sha: str) -> None:
+    """Write the PAUSE token to the operator-only 0600 file — same format the
+    agent loop uses, so `cosmic-cli helix show-pause-token` reads it. The token
+    NEVER touches stdout or a model-visible reason (confused-deputy lock)."""
+    from datetime import datetime, timezone
+
+    store = Path.home() / ".cosmic-cli" / "last_pause_token.json"
+    try:
+        store.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(store.parent, 0o700)
+        except OSError:
+            pass
+        payload = {
+            "token": tok,
+            "channel": f"gate-{channel}",
+            "action_sha256": action_sha,
+            "minted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tmp = store.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        tmp.replace(store)
+        try:
+            os.chmod(store, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass  # best-effort operator channel; the deny still fires
+
+
+def _pause_at_seam(action_type: ActionType, action_sha: str) -> Optional[str]:
+    """Bridge PAUSE (box 4). An operator-approved token (from COSMIC_APPROVAL_TOKEN,
+    which only the operator sets — never the model) is consumed exactly-once via
+    the frozen claim_once and yields OPEN. Otherwise a token is minted to the
+    operator-only channel and the action is denied. The token is action-bound
+    (evaluated_input_sha256), single-use, and never model-visible."""
+    tok = os.environ.get("COSMIC_APPROVAL_TOKEN", "").strip()
+    if tok:
+        try:
+            if ApprovalManager().claim_once(tok, action_sha):
+                return None  # operator-approved retry -> OPEN
+        except Exception:
+            pass  # fail-closed: fall through to re-mint + deny
+    try:
+        minted = ApprovalManager().mint_token(action_sha)
+        _write_operator_pause_token(minted, action_type.value, action_sha)
+    except Exception:
+        raise _Deny(f"PAUSE ({action_type.value}): cannot mint approval token")
+    raise _Deny(
+        f"PAUSE ({action_type.value}): human approval required — "
+        "operator: cosmic-cli helix show-pause-token"
+    )
 
 
 def _load_rules(cwd: str):

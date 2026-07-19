@@ -23,20 +23,27 @@ COSMIC_MD = """# COSMIC.md
 |----|------|-------|---------|
 | destructive-rm | WITNESS | SHELL,CODE | rm -rf |
 | outbound-net | PAUSE | SHELL,CODE,NETWORK | curl |
+| pause-deploy | PAUSE | SHELL,CODE | deploy |
 """
 
 
 @pytest.fixture
-def ws(tmp_path):
+def ws(tmp_path, monkeypatch):
     (tmp_path / "COSMIC.md").write_text(COSMIC_MD)
+    # Redirect HOME so PAUSE token files never touch the real ~/.cosmic-cli.
+    monkeypatch.setenv("HOME", str(tmp_path))
     return tmp_path
 
 
-def _run(env, capsys, monkeypatch, ws, nonce=NONCE, verb_check=False):
+def _run(env, capsys, monkeypatch, ws, nonce=NONCE, verb_check=False, approval_token=None):
     if nonce is None:
         monkeypatch.delenv("COSMIC_GATE_NONCE", raising=False)
     else:
         monkeypatch.setenv("COSMIC_GATE_NONCE", nonce)
+    if approval_token is None:
+        monkeypatch.delenv("COSMIC_APPROVAL_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("COSMIC_APPROVAL_TOKEN", approval_token)
     if env is not None:
         env.setdefault("cwd", str(ws))
     code = run_gate(hook="grok", verb_check=verb_check,
@@ -63,10 +70,12 @@ def test_witness_shell_denied_empty_stdout(ws, capsys, monkeypatch):
     assert "WITNESS" in err
 
 
-def test_pause_shell_denied_empty_stdout(ws, capsys, monkeypatch):
+def test_curl_denied_by_check_shell_before_pause(ws, capsys, monkeypatch):
+    # curl matches the PAUSE rule AND check_shell's network block. In safe mode
+    # check_shell runs FIRST (token-burn avoidance), so it denies before any token
+    # is minted for a command the blocklist would reject anyway.
     code, out, err = _run(_env("run_terminal_command", command="curl http://x"), capsys, monkeypatch, ws)
-    assert out == ""
-    assert "PAUSE" in err
+    assert out == "" and "check_shell" in err
 
 
 def test_check_shell_backstop_denies(ws, capsys, monkeypatch):
@@ -157,3 +166,44 @@ def test_open_payload_emits_env_nonce_not_payload_nonce(ws, capsys, monkeypatch)
                           capsys, monkeypatch, ws)
     assert out.strip() == SENTINEL        # real env nonce
     assert fake not in out                # payload nonce never leaks
+
+
+# ---- box 4: PAUSE token flow at the gate seam ----
+
+def _operator_token(ws):
+    f = ws / ".cosmic-cli" / "last_pause_token.json"
+    return json.loads(f.read_text())["token"] if f.is_file() else None
+
+
+def test_pause_mints_token_denies_and_model_never_sees_it(ws, capsys, monkeypatch):
+    code, out, err = _run(_env("run_terminal_command", command="deploy prod"), capsys, monkeypatch, ws)
+    assert out == ""                              # deny: no sentinel
+    assert "PAUSE" in err
+    tok = _operator_token(ws)
+    assert tok and tok.startswith("tok-")         # token minted to the operator-only file
+    assert tok not in out and tok not in err      # NEVER model-visible (stdout or reason)
+
+
+def test_pause_approved_retry_opens(ws, capsys, monkeypatch):
+    _run(_env("run_terminal_command", command="deploy prod"), capsys, monkeypatch, ws)   # mint
+    tok = _operator_token(ws)
+    code, out, err = _run(_env("run_terminal_command", command="deploy prod"),
+                          capsys, monkeypatch, ws, approval_token=tok)
+    assert out.strip() == SENTINEL                # operator-approved retry -> OPEN
+
+
+def test_pause_token_exactly_once(ws, capsys, monkeypatch):
+    _run(_env("run_terminal_command", command="deploy prod"), capsys, monkeypatch, ws)
+    tok = _operator_token(ws)
+    _, o1, _ = _run(_env("run_terminal_command", command="deploy prod"), capsys, monkeypatch, ws, approval_token=tok)
+    _, o2, _ = _run(_env("run_terminal_command", command="deploy prod"), capsys, monkeypatch, ws, approval_token=tok)
+    assert o1.strip() == SENTINEL                 # first use approved
+    assert o2 == ""                               # second use denied (exactly-once)
+
+
+def test_pause_token_action_bound(ws, capsys, monkeypatch):
+    _run(_env("run_terminal_command", command="deploy prod"), capsys, monkeypatch, ws)  # token for "deploy prod"
+    tok = _operator_token(ws)
+    code, out, err = _run(_env("run_terminal_command", command="deploy staging"),
+                          capsys, monkeypatch, ws, approval_token=tok)
+    assert out == ""                              # wrong action -> sha mismatch -> deny
