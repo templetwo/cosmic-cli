@@ -1231,8 +1231,13 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         f"Approve: cosmic-cli helix confirm {tok} "
                         f"then re-run the {kind} action (token is single-use)."
                     )
-            except Exception as e:  # pragma: no cover
-                logger.debug("helix witness skip (%s): %s", kind, e)
+            except Exception as e:
+                # Fail-closed: never fall through to allow on witness transport /
+                # data-dir / parse errors (Claude re-fire + integration map step 0).
+                logger.warning("helix witness fail-closed (%s): %s", kind, e)
+                return (
+                    f"[BLOCKED] Helix compass fail-closed ({kind}): {e}"
+                )
 
         # 4. All gates open — consume local PAUSE token now
         if (

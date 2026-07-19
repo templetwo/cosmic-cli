@@ -174,3 +174,36 @@ def test_parse_witness_fail_closed_on_error_and_unknown():
 
     empty = helix_bridge.parse_witness({"ok": True, "result": {}})
     assert empty["blocked"] is True
+
+
+def test_compass_gate_fail_closed_when_witness_raises():
+    """Raised witness must not fall through to allow (integration map step 0)."""
+    from cosmic_cli.agents import StargazerAgent
+
+    agent = StargazerAgent(
+        "t",
+        api_key="test",
+        quiet=True,
+        use_helix=True,
+        show_progress=False,
+        work_dir="/tmp",
+    )
+    # Force helix path: use_helix True and mock bridge
+    import cosmic_cli.agents as agents_mod
+
+    class BoomBridge:
+        @staticmethod
+        def witness(**kwargs):
+            raise NotADirectoryError("simulated data-dir failure")
+
+        @staticmethod
+        def parse_witness(w):
+            return {}
+
+    with patch.object(agents_mod, "helix_bridge", BoomBridge):
+        agent.use_helix = True
+        out = agent._compass_gate("echo hello", kind="SHELL")
+    assert out is not None
+    assert "BLOCKED" in out
+    assert "fail-closed" in out
+
