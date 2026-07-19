@@ -962,6 +962,34 @@ def workflow(tasks, model: str) -> None:
         sys.exit(1)
 
 
+@cli.command("gate")
+@click.option(
+    "--hook",
+    type=click.Choice(["grok", "claude"]),
+    default="grok",
+    show_default=True,
+    help="Cockpit hook flavor (PreToolUse envelope on stdin).",
+)
+@click.option("--verb-check", is_flag=True, help="Existence probe for the wrapper; exit 0.")
+@click.option(
+    "--mode",
+    type=click.Choice(["safe", "interactive", "full"]),
+    default="safe",
+    show_default=True,
+)
+def gate_cmd(hook: str, verb_check: bool, mode: str) -> None:
+    """COSMIC-ALLOW sentinel gate (RFC v1.1).
+
+    Reads a cockpit PreToolUse envelope on stdin and emits
+    `COSMIC-ALLOW v1 <nonce>` on stdout ONLY for a genuine OPEN decision. Deny is
+    signaled by an empty stdout; all diagnostics go to stderr. The nonce comes
+    from COSMIC_GATE_NONCE only, never the payload.
+    """
+    from cosmic_cli.gate import run_gate
+
+    raise SystemExit(run_gate(hook=hook, verb_check=verb_check, exec_mode=mode))
+
+
 def main() -> None:
     cli()
 

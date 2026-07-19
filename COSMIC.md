@@ -95,8 +95,18 @@ Re-frozen at `ba5287f` after soundness pass clean. Imagination is not a finding.
 
 Stop signal: if a change is not required by a current exit criterion, it is
 next-version work, and the next version has not begun. Hardening of this core
-is done; remaining work is construction (gate verb / wrapper / canary), not
-refinement.
+is done; remaining work is construction, not refinement.
+
+## Sentinel (v0.9 construction)
+
+**Box 1 landed:** `cosmic-cli gate --hook {grok,claude}` — COSMIC-ALLOW v1
+sentinel. Reads PreToolUse JSON on stdin; stdout is **only**
+`COSMIC-ALLOW v1 <nonce>` on genuine OPEN (nonce from `COSMIC_GATE_NONCE` only).
+Deny = empty stdout. Frozen avionics called, not modified. See
+`cosmic_cli/gate.py` and `tests/test_gate_verb.py`.
+
+Still construction (not this section's freeze): boot canary, wrapper install,
+PAUSE at the gate seam, checkpoint-in-gate, live Helix leg.
 
 Non-goal: sharpening past convergence. A fail-closed gate fails closed against its
 own worst habit too.

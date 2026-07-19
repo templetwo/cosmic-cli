@@ -19,7 +19,7 @@ from .policy import (
 from .rules import load_rules_from_markdown
 from .self_correction import BoundedSelfCorrection, CorrectionContext, CorrectionState
 
-__version__ = "0.8.7"
+__version__ = "0.9.0"
 __author__ = "Anthony Vasquez Sr. / Temple of Two"
 __description__ = (
     "Temple runtime avionics: Grok Stargazer, T2Helix memory, "
