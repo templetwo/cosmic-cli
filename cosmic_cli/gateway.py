@@ -108,6 +108,26 @@ class ActionGateway:
         except OSError:
             pass  # best-effort; re-verify already ran
 
+    @staticmethod
+    def _unseal_paths(paths: Optional[List[Path]]) -> None:
+        """Restore owner-write on intended paths before a new authorized mutation.
+
+        Symmetric with seal-after-verify: seal closes the late-writer hole;
+        un-seal on the next authorize keeps write-then-revise working
+        (conformance regression test_sequential_mutation_survives_seal).
+        """
+        if not paths:
+            return
+        for p in paths:
+            try:
+                path = Path(p)
+                if path.is_file():
+                    mode = path.stat().st_mode
+                    if not (mode & 0o200):
+                        path.chmod(mode | 0o200)
+            except OSError:
+                continue
+
     def authorize(
         self,
         action_type: ActionType,
@@ -164,6 +184,11 @@ class ActionGateway:
                 raise PermissionError(
                     "PAUSE approval token invalid, expired, or already used"
                 )
+
+        # Next authorized mutation may target a previously sealed file —
+        # restore owner-write before the executor runs (seal↔unseal pair).
+        if intended_paths:
+            self._unseal_paths(intended_paths)
 
         receipt = AuthorizationReceipt(
             receipt_id=self._mint_receipt_id(),

@@ -141,3 +141,39 @@ def test_quiescence_post_verify_write(tmp_path):
     with pytest.raises(OSError):
         f.write_text("EVIL-LATE")
     assert f.read_text() == "APPROVED"
+
+
+def test_sequential_mutation_survives_seal(tmp_path):
+    """Write-then-revise: seal after #1 must not block authorized mutation #2.
+
+    authorize() un-seals intended_paths; writers also chmod u+w. Late
+    unauthorized writes still fail (test_quiescence_post_verify_write).
+    """
+    from cosmic_cli import tools
+
+    f = tmp_path / "note.txt"
+    f.write_text("v0")
+
+    def mutate(content):
+        gw = ActionGateway(evaluate_rules, checkpoint_manager=CheckpointManager(tmp_path))
+        rec = gw.authorize(
+            ActionType.WRITE,
+            bind_write(path="note.txt", content=content),
+            [],
+            intended_paths=[f],
+            executor_name="stargazer",
+        )
+        return gw.execute_with_receipt(
+            rec,
+            lambda: tools.tool_write(tmp_path, "note.txt", content),
+            expected_content=content.encode(),
+            verify_path=f,
+        )
+
+    mutate("first draft")
+    mutate("revised draft")
+    assert f.read_text() == "revised draft"
+    # Still sealed after last authorized write — unauthorized late write fails
+    with pytest.raises(OSError):
+        f.write_text("EVIL-LATE")
+

@@ -158,6 +158,17 @@ def tool_grep(
     return "\n".join(hits) if hits else f"(no matches for /{pattern}/)"
 
 
+def _ensure_owner_writable(target: Path) -> None:
+    """Clear seal from a prior mutation so sequential edits can proceed."""
+    try:
+        if target.is_file():
+            mode = target.stat().st_mode
+            if not (mode & 0o200):
+                target.chmod(mode | 0o200)
+    except OSError:
+        pass
+
+
 def tool_edit(
     root: Path,
     path: str,
@@ -173,6 +184,7 @@ def tool_edit(
         return f"[Error] {e}", False
     if not target.is_file():
         return f"[Error] file not found: {path}", False
+    _ensure_owner_writable(target)
     try:
         original = target.read_text(encoding="utf-8")
     except OSError as e:
@@ -260,6 +272,7 @@ def tool_write(root: Path, path: str, content: str, *, overwrite: bool = True) -
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
+            _ensure_owner_writable(target)
             bak = target.with_suffix(target.suffix + ".cosmicbak")
             shutil.copy2(target, bak)
         target.write_text(content, encoding="utf-8")
@@ -281,6 +294,7 @@ def tool_create(root: Path, path: str, content: str) -> Tuple[str, bool]:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
+            _ensure_owner_writable(target)
             bak = target.with_suffix(target.suffix + ".cosmicbak")
             shutil.copy2(target, bak)
         target.write_text(content, encoding="utf-8")
