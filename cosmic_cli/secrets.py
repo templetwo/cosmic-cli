@@ -160,6 +160,12 @@ def is_sensitive_path(path: str) -> bool:
         return True
     if "credential" in name:
         return True
+    # Privilege ranking: PAUSE token store is L2-only — L0 READ/WRITE tools
+    # must not reach last_pause_token / operator_approval_token.
+    from cosmic_cli.ranking import is_approval_token_path
+
+    if is_approval_token_path(path):
+        return True
     return False
 
 

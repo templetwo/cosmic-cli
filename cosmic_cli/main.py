@@ -760,13 +760,20 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
     Compass honesty: WITNESS hard-denies. PAUSE soft-denies with a token —
     approve via `helix confirm <token>`, then retry the action. OPEN proceeds.
 
-    Local PAUSE tokens (gate seam) are operator-only:
-      show-pause-token  — display last minted token (never model context)
+    Local PAUSE tokens (gate seam) are L2-only (privilege ranking):
+      show-pause-token  — display last minted token (TTY / COSMIC_L2_OPERATOR)
       accept-pause      — stage token for one approved retry via the wrapper
-                          (writes ~/.cosmic-cli/operator_approval_token; works
-                          even when grok-build does not pass shell env into hooks)
+                          (writes ~/.cosmic-cli/operator_approval_token)
+    L0 agent shells cannot invoke these; see COSMIC.md § Ranking.
     """
     action = action.lower()
+    if action in ("show-pause-token", "accept-pause", "confirm"):
+        from cosmic_cli.ranking import require_l2_tty
+
+        blocked = require_l2_tty(f"helix {action}")
+        if blocked:
+            console.print(f"[red]{blocked}[/red]")
+            sys.exit(4)  # same exit class as PAUSE/WITNESS block
     if action == "show-pause-token":
         tok_path = Path.home() / ".cosmic-cli" / "last_pause_token.json"
         if not tok_path.is_file():
@@ -783,12 +790,12 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
         console.print(f"[green]token[/green]   {tok}")
         console.print(
             f"[dim]export COSMIC_APPROVAL_TOKEN={tok}[/dim]\n"
-            f"[dim]# or: cosmic-cli helix accept-pause   # file channel for hooks[/dim]\n"
+            f"[dim]# or: cosmic-cli helix accept-pause   # L2 TTY file channel[/dim]\n"
             f"[dim]# or: cosmic-cli helix confirm {tok}[/dim]"
         )
         return
     if action == "accept-pause":
-        # Stage operator approval for one gate retry (file channel).
+        # Stage L2 operator approval for one gate retry (file channel).
         src = Path.home() / ".cosmic-cli" / "last_pause_token.json"
         dst = Path.home() / ".cosmic-cli" / "operator_approval_token"
         if not src.is_file():

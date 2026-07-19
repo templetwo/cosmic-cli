@@ -60,7 +60,14 @@ RM_RECURSIVE = re.compile(
 def check_shell(cmd: str, *, exec_mode: str = "safe") -> Optional[str]:
     """Return a block message if command must not run, else None."""
     if exec_mode == "full":
-        return None
+        return None  # L2/L3 blast-radius opt-in; skips ranking surface too
+    # Privilege ranking (L1 defense-in-depth): L0 must never reach the PAUSE
+    # approval channel via shell, even in interactive mode.
+    from cosmic_cli.ranking import touches_approval_surface
+
+    ranked = touches_approval_surface(cmd)
+    if ranked:
+        return ranked
     cmd_l = cmd.lower()
     for d in DANGEROUS_SUBSTR:
         if d.lower() in cmd_l:

@@ -97,6 +97,42 @@ Stop signal: if a change is not required by a current exit criterion, it is
 next-version work, and the next version has not begun. Hardening of this core
 is done; remaining work is construction, not refinement.
 
+## Ranking (load-bearing)
+
+Sibling of Convergence. Anthony's insight 2026-07-19: *"you approve the cosmic
+cli and I approve you"* — a privilege ranking, not only a collaboration habit.
+
+**Law:** Approval of an action at level N must be issued from a level **strictly
+greater than N**, through a channel no actor at level ≤ N can reach. No actor
+approves its own action or its own level. (Biba integrity / protection rings.)
+
+| Level | Who | Approves |
+|-------|-----|----------|
+| **L3** | Anthony (human owner) | push, DOI deposit, stack-policy enactment |
+| **L2** | Reviewer seat / operator at a TTY | cosmic-cli behavior, PAUSE approval |
+| **L1** | cosmic-cli / compass | gates L0 (WITNESS/PAUSE/OPEN); not self-governance |
+| **L0** | Gated model / agent shell | **nothing** — cannot reach any approval channel |
+
+**Role sets the level, not identity.** The same Claude is L2 reviewing Grok and
+L0 the moment it drives a gated shell. A human at a TTY is L2+; a non-interactive
+agent shell is L0, whoever is driving it.
+
+**PAUSE channel is L2-only by construction** (`cosmic_cli/ranking.py`):
+
+1. `helix accept-pause` / `show-pause-token` / `confirm` require interactive TTY
+   (or `COSMIC_L2_OPERATOR=1` for scripted L2 seats). L0 exit 4 otherwise.
+2. L1 WITNESS: `check_shell` denies any tool call touching the approval surface
+   (`accept-pause`, token files, `COSMIC_APPROVAL_TOKEN=`).
+3. Token paths are sensitive: L0 READ/WRITE tools cannot open
+   `last_pause_token.json` / `operator_approval_token`.
+
+**Conformance:** `tests/test_privilege_ranking.py` — the exact self-approval
+reproducer (L0 runs accept-pause, retries) must return **deny**. When that is
+green, the class is closed, not just the instance.
+
+Full write-up: `PRIVILEGE_RANKING.md`. Stack standing-law enactment is Anthony's
+(registry via `current_policies()`); this section is project law for the repo.
+
 ## Sentinel (v0.9 construction)
 
 **Box 1:** `cosmic-cli gate --hook {grok,claude}` — COSMIC-ALLOW v1 sentinel
@@ -114,8 +150,8 @@ cosmic-cli gate --boot-canary           # 4 deny + 1 allow; refuse if silent/bro
 - Canary: shell/write/read/MCP must empty stdout; grep must emit sentinel.
 - Live-verified: `rm -rf` → Hook denied (no sentinel); boot canary PASS.
 
-Still construction: PAUSE at the gate seam, checkpoint-in-gate, live Helix leg,
-deposit packaging.
+PAUSE at the gate seam landed (box 4) + privilege ranking on the approval
+channel. Still construction: checkpoint-in-gate, live Helix leg, deposit packaging.
 
 Non-goal: sharpening past convergence. A fail-closed gate fails closed against its
 own worst habit too.
@@ -131,7 +167,12 @@ compass remains T2Helix; this table is the **local** policy kernel door
 |----|------|-------|---------|
 | destructive-rm | WITNESS | SHELL,CODE | rm -rf |
 | outbound-net | PAUSE | SHELL,CODE,NETWORK | curl |
+| ranking-accept-pause | WITNESS | SHELL,CODE | accept-pause |
+| ranking-show-pause | WITNESS | SHELL,CODE | show-pause-token |
+| ranking-token-file | WITNESS | SHELL,CODE | last_pause_token |
 | example-allow | OPEN | SHELL | safe-command |
+
+*(Ranking rows are defense-in-depth; `check_shell` + TTY-gate also enforce L2-only.)*
 
 **Loader:** 4-column table under this heading. Severity lattice WITNESS > PAUSE > OPEN;
 all matches reported; unknown dispositions rejected at load. Local PAUSE mints a
