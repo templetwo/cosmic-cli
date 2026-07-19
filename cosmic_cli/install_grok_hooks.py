@@ -69,7 +69,9 @@ fi
 INPUT="$(cat)"
 
 set +e
-OUT="$(printf '%s' "${{INPUT}}" | COSMIC_GATE_NONCE="${{NONCE}}" env COSMIC_APPROVAL_TOKEN="${{COSMIC_APPROVAL_TOKEN:-}}" _cosmic gate --hook grok --mode safe 2>/dev/null)"
+# Bash prefix assignment (NOT `env ... _cosmic`) — `_cosmic` is a shell function;
+# `env` only execs PATH binaries and would make every allow attempt fail closed.
+OUT="$(printf '%s' "${{INPUT}}" | COSMIC_GATE_NONCE="${{NONCE}}" COSMIC_APPROVAL_TOKEN="${{COSMIC_APPROVAL_TOKEN:-}}" _cosmic gate --hook grok --mode safe 2>/dev/null)"
 set -e
 
 EXPECTED="COSMIC-ALLOW v1 ${{NONCE}}"

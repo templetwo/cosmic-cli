@@ -56,7 +56,9 @@ fi
 INPUT="$(cat)"
 
 set +e
-OUT="$(printf '%s' "${INPUT}" | COSMIC_GATE_NONCE="${NONCE}" env COSMIC_APPROVAL_TOKEN="${COSMIC_APPROVAL_TOKEN:-}" cosmic-cli gate --hook grok --mode safe 2>/dev/null)"
+# Bash prefix assignment so the token is in the gate child env even if the
+# parent only set (did not export) COSMIC_APPROVAL_TOKEN.
+OUT="$(printf '%s' "${INPUT}" | COSMIC_GATE_NONCE="${NONCE}" COSMIC_APPROVAL_TOKEN="${COSMIC_APPROVAL_TOKEN:-}" cosmic-cli gate --hook grok --mode safe 2>/dev/null)"
 set -e
 
 EXPECTED="COSMIC-ALLOW v1 ${NONCE}"
