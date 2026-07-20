@@ -1,0 +1,20 @@
+# Install: copy to ~/.grok/sandbox.toml (or merge the [profiles.temple] table).
+# Usage:  grok --sandbox temple
+#         GROK_SANDBOX=temple grok
+#
+# Optional default in ~/.grok/config.toml:
+#   [sandbox]
+#   profile = "temple"
+#
+# IMPORTANT: deny token *files*, not the whole ~/.cosmic-cli directory.
+# PreToolUse gate lives at ~/.cosmic-cli/hooks/ and must remain executable.
+# Replace HOME path with your absolute home.
+
+[profiles.temple]
+extends = "workspace"
+deny = [
+  "/Users/YOU/.cosmic-cli/last_pause_token.json",
+  "/Users/YOU/.cosmic-cli/operator_approval_token",
+  "/Users/YOU/.cosmic-cli/local_approvals.json",
+  "/Users/YOU/.cosmic-cli/local_approvals.json.lock",
+]

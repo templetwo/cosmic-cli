@@ -119,9 +119,13 @@ agent shell is L0, whoever is driving it.
 
 **Enforcement hierarchy** (strongest → weakest):
 
-1. **Kernel isolation** — `sandbox.toml` deny-glob on `~/.cosmic-cli`; agent
-   shell runs under Seatbelt (`sandbox-exec`) on macOS so L0 cannot read/write
-   the token store regardless of command shape (`cosmic_cli/sandbox.py`).
+1. **Kernel isolation** — two compose layers, same primitive (Seatbelt / Landlock):
+   - **Cockpit:** `~/.grok/sandbox.toml` profile `temple` (extends `workspace`)
+     kernel-denies PAUSE token *files* under `~/.cosmic-cli/` (not the whole
+     tree — `hooks/` must stay executable). `grok --sandbox temple` or
+     `GROK_SANDBOX=temple`. See `scripts/grok-sandbox-temple.toml.example`.
+   - **Avionics agent loop:** cosmic `sandbox.toml` + `cosmic_cli/sandbox.py`
+     wraps `agents._run_shell` so `cosmic-cli do` cannot read the token store.
 2. **Privilege ranking** — `helix accept-pause` / `show-pause-token` / `confirm`
    require an interactive TTY. L0 exit 4 otherwise. **No env break-glass**
    (`COSMIC_L2_OPERATOR` removed: a flag L0 can set is an L2 credential L0 can
@@ -130,6 +134,12 @@ agent shell is L0, whoever is driving it.
    substrings, base64-decoded fragments, and opaque wrappers (`base64|sh`,
    `python -c`, `eval`, …). Alone, this layer is known-evadable; it is not the
    floor. Token paths are also sensitive for L0 READ/WRITE tools.
+
+**Live compose receipt (2026-07-19):** with `GROK_SANDBOX=temple`, cockpit shell
+`cat …/last_pause_token.json` → `Operation not permitted` (Seatbelt). Benign
+`echo` still runs (hooks path not over-denied). Hook source (`xai-org/grok-build`)
+confirms process env is inherited into PreToolUse children (no scrub) — L2
+`COSMIC_APPROVAL_TOKEN` export remains the approve path.
 
 **Conformance:** `tests/test_privilege_ranking.py` — plain self-approve
 reproducer denies; base64/interpreter evasion through the gate denies; L2 env
