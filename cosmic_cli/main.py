@@ -8,6 +8,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -245,6 +246,77 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     set_verbose(verbose)
+    # The security gate runs as the PreToolUse hook on every tool call and must
+    # stay a pure, side-effect-free classifier — no dashboard spawn, no write
+    # into the ranking-protected token-store dir on that hot path. Auto-start the
+    # dashboard only for human/interactive invocations, never for `gate` (which
+    # also covers --boot-canary/--floor-canary/--verb-check as flags).
+    if ctx.invoked_subcommand not in _NO_DASHBOARD_SUBCOMMANDS:
+        _ensure_dashboard()
+
+
+DASHBOARD_PORT = int(os.environ.get("COSMIC_DASHBOARD_PORT", "4333"))
+# Subcommands that must never trigger dashboard side effects. `gate` is the
+# PreToolUse hook (fires on every tool call); its --boot-canary/--floor-canary/
+# --verb-check are flags on it, so excluding `gate` covers them too.
+_NO_DASHBOARD_SUBCOMMANDS = {"gate"}
+
+
+def _dashboard_log_path() -> Path:
+    """Dashboard logs live OUTSIDE ~/.cosmic-cli — that dir is the ranking-
+    protected token store and must not accumulate writes from this path."""
+    d = Path.home() / ".cosmic-cli-logs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "dashboard.log"
+
+
+def _dashboard_running(port: int = DASHBOARD_PORT) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_dashboard(port: int = DASHBOARD_PORT) -> None:
+    """Best-effort: spawn the Mission Control server if it isn't listening.
+
+    Opt out with COSMIC_NO_DASHBOARD=1. Never blocks or fails the CLI.
+    """
+    if os.environ.get("COSMIC_NO_DASHBOARD") == "1":
+        return
+    if _dashboard_running(port):
+        return
+    try:
+        log = open(_dashboard_log_path(), "ab")
+        subprocess.Popen(
+            [sys.executable, "-m", "cosmic_cli.dashboard", str(port)],
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
+@cli.command("dashboard")
+@click.option("--port", default=DASHBOARD_PORT, show_default=True, help="Dashboard port")
+@click.option("--no-open", is_flag=True, help="Don't open the browser")
+def dashboard_cmd(port: int, no_open: bool) -> None:
+    """Mission Control — live dashboard over the shared chronicle."""
+    url = f"http://localhost:{port}"
+    if not _dashboard_running(port):
+        _ensure_dashboard(port)
+        for _ in range(20):
+            if _dashboard_running(port):
+                break
+            time.sleep(0.1)
+    status = "running" if _dashboard_running(port) else "failed to start (see ~/.cosmic-cli/dashboard.log)"
+    console.print(f"Mission Control · {status} · [link={url}]{url}[/link]")
+    if not no_open and _dashboard_running(port):
+        subprocess.run(["open", url], check=False)
 
 
 def _run_stargazer(
