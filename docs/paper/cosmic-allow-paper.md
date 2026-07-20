@@ -17,9 +17,9 @@ COSMIC-ALLOW, a cross-vendor sentinel protocol (RFC v1.1) that mounts a
 fail-closed governance gate under fail-open cockpit hook systems, specifically
 Claude Code hooks and the newly open-sourced Grok Build hooks, which are
 deliberately compatible. The design makes deny the ground state. Proof-of-allow
-is strict: the gate's entire standard output must equal `COSMIC-ALLOW v1 <nonce>`,
-where the nonce is a per-invocation value of at least 128 bits passed only through
-an environment variable; the gate treats standard input as opaque bytes, never
+is strict: the gate's entire standard output must equal `COSMIC-ALLOW v1 <nonce>`
+(plus a single trailing newline), where the nonce is a per-invocation value of at
+least 128 bits passed only through an environment variable; the gate treats standard input as opaque bytes, never
 reflects it, and never prints the environment. Enforcement is layered by design:
 a kernel sandbox floor, provisioned by default into the cockpit's native
 Landlock/Seatbelt configuration and verified at launch by a floor canary (a live
@@ -95,10 +95,11 @@ to a testable bar.
 Attack Success Rate (ASR), the fraction of attack instances that achieve the
 attacker's objective, is the canonical metric from Agent Security Bench (Zhang et
 al., arXiv:2410.02644); we adopt it. The EU AI Act Annex III high-risk
-obligations, including Article 14 human oversight and Article 15 robustness, are
-operative August 2, 2026 as of this writing (a provisional Digital Omnibus
-agreement may defer stand-alone Annex III obligations to December 2, 2027, pending
-formal adoption), and motivate a demonstrable, auditable oversight mechanism.
+obligations, including Article 14 human oversight and Article 15 robustness, were
+scheduled to apply from August 2, 2026; the May 2026 Digital Omnibus political
+agreement defers stand-alone Annex III obligations to December 2, 2027 upon formal
+adoption, expected at this writing before the August date. Either way, they
+motivate a demonstrable, auditable oversight mechanism.
 
 ## 3. The COSMIC-ALLOW protocol
 
@@ -107,7 +108,8 @@ load-bearing parts.
 
 **Proof-of-allow.** Deny is the ground state. On a genuine allow (OPEN
 disposition), the gate writes to standard output exactly `COSMIC-ALLOW v1 <nonce>`
-and nothing else; this is the only write to standard output in any code path. The
+followed by a single newline, and nothing else; this is the only write to standard
+output in any code path. The
 wrapper checks the whole output for equality against the sentinel it expects. A
 sentinel embedded in extra output is a deny; the gate's standard error is
 discarded from the decision. Exit codes are not the signal — presence of the exact

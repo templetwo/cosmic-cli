@@ -6,7 +6,7 @@ Not another agent TUI. Cosmic is the mission protocol a cockpit calls:
 tool-shaped actions, T2Helix memory, compass-gated execution, a kernel-backed
 governance floor, and an independent review seat.
 
-**Default model:** `grok-4.5` · **v0.9.3** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
+**Default model:** `grok-4.5` · **v0.9.4** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
 
 ## What it is
 

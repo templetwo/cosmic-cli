@@ -8,6 +8,7 @@ are now green (fcntl refuse + seal-after-verify). Authored by the code seat
 2026-07-19; helm commit + box-4 fixes 2026-07-19.
 """
 
+import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -21,6 +22,15 @@ from cosmic_cli.policy import ActionType, evaluate_rules
 
 SHA = "a" * 64
 WRONG = "b" * 64
+
+# uid 0 ignores chmod read-only seals, so the "unauthorized late write must fail"
+# assertions below cannot be falsified as root. Skip them (an environment limit,
+# not a pass) rather than red an otherwise-green deposit on a root-container
+# rerun; the red-team battery applies the same guard via requires_nonroot.
+requires_nonroot = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="uid 0 ignores chmod seals (environment limit, not a pass)",
+)
 
 
 def test_collision_edit_serialization():
@@ -113,6 +123,7 @@ def test_post_exec_binding_rolls_back(tmp_path):
     assert f.read_text() == "PRE", "post-exec mismatch must roll back to the pre-image"
 
 
+@requires_nonroot
 def test_quiescence_post_verify_write(tmp_path):
     """Box 4b: after verify+seal, a late write must not stick."""
     f = tmp_path / "t.txt"
@@ -143,6 +154,7 @@ def test_quiescence_post_verify_write(tmp_path):
     assert f.read_text() == "APPROVED"
 
 
+@requires_nonroot
 def test_sequential_mutation_survives_seal(tmp_path):
     """Write-then-revise: seal after #1 must not block authorized mutation #2.
 
