@@ -8,6 +8,8 @@ governance floor, and an independent review seat.
 
 **Default model:** `grok-4.5` · **v0.9.4** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21461197.svg)](https://doi.org/10.5281/zenodo.21461197) · Apache-2.0 · [COSMIC-ALLOW RFC v1.1](docs/COSMIC-ALLOW-RFC-v1.1.md)
+
 ## What it is
 
 | Layer | Role |
@@ -219,6 +221,14 @@ One Stargazer path (Grok). Legacy material under `_archive/`.
 pytest tests/ -q                   # core suite
 pytest tests/battery/ -q           # red-team battery + ASR table
 ```
+
+## Cite
+
+> Vasquez, A. J., Sr. (2026). *Fail-Closed Governance for Fail-Open Harnesses: A
+> Cross-Vendor Proof-of-Allow Protocol for Coding Agents (COSMIC-ALLOW RFC v1.1)*
+> (v0.9.4). The Temple of Two. Zenodo. https://doi.org/10.5281/zenodo.21461197
+
+Concept DOI (all versions): `10.5281/zenodo.21461196` · see [`CITATION.cff`](CITATION.cff).
 
 ## License
 

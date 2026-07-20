@@ -15,6 +15,14 @@ authors:
     affiliation: "The Temple of Two"
     orcid: "https://orcid.org/0009-0000-6440-1506"
 version: "0.9.4"
+doi: "10.5281/zenodo.21461197"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21461197"
+    description: "Version DOI (v0.9.4)"
+  - type: doi
+    value: "10.5281/zenodo.21461196"
+    description: "Concept DOI (all versions)"
 date-released: "2026-07-20"
 license: Apache-2.0
 repository-code: "https://github.com/templetwo/cosmic-cli"
