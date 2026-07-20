@@ -199,10 +199,12 @@ def wrapper(iso_home: Path, workspace: Path):
             env["PATH"] = path_override
         if extra_env:
             env.update(extra_env)
-        # Prefer this tree's CLI for the wrapper's cosmic-cli child
-        env["PATH"] = str(REPO / "venv" / "bin") + os.pathsep + env.get("PATH", "")
+        # Prefer this tree's CLI unless the test intentionally isolates PATH
+        # (e.g. path_override="/bin:/usr/bin" to prove missing-cosmic-cli deny).
+        if path_override is None:
+            env["PATH"] = str(REPO / "venv" / "bin") + os.pathsep + env.get("PATH", "")
+            env["COSMIC_CLI_HOME"] = str(REPO)
         env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
-        env["COSMIC_CLI_HOME"] = str(REPO)
         payload = raw_stdin if raw_stdin is not None else json.dumps(envelope)
         proc = subprocess.run(
             ["bash", str(WRAPPER)],
