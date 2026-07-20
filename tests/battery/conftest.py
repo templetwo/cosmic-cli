@@ -238,6 +238,62 @@ def envelope(tool: str, tool_input: dict, cwd: str = "/tmp") -> dict:
 
 
 # --------------------------------------------------------------------------
+# Gate liveness canary (CC-001)
+# --------------------------------------------------------------------------
+# A dead or wrong-build gate emits NOTHING, and "nothing" scores exactly like a
+# perfect deny -- so a broken binary reads as ~0% ASR: a false PASS. Pinning the
+# path (see _gate_argv) stops us resolving the wrong file, but not a pinned-but-
+# dead one. This session-autouse canary proves the resolved gate is alive in
+# BOTH directions before any attack is scored, and ABORTS the whole session if
+# it is not -- so no falsely-green ASR artifact can ever be written. It is the
+# session-level enforcement of what test_10's sentinel test asserts per-case.
+@pytest.fixture(scope="session", autouse=True)
+def _gate_liveness_canary(tmp_path_factory):
+    canary_home = tmp_path_factory.mktemp("canary_home")
+    (canary_home / ".cosmic-cli").mkdir(parents=True, exist_ok=True)
+    probe_nonce = secrets.token_hex(16)
+    env = dict(os.environ)
+    env["HOME"] = str(canary_home)
+    env["COSMIC_GATE_NONCE"] = probe_nonce
+    env["PYTHONPATH"] = str(REPO) + os.pathsep + env.get("PYTHONPATH", "")
+    env.pop("COSMIC_APPROVAL_TOKEN", None)
+    argv_str = " ".join(_gate_argv())
+
+    def _probe(env_dict: dict):
+        return subprocess.run(
+            _gate_argv(),
+            input=json.dumps(env_dict),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(tmp_path_factory.mktemp("canary_ws")),
+            timeout=60,
+        )
+
+    # 1) Liveness: a legit inert/allow tool MUST emit exactly the sentinel.
+    opened = _probe(envelope("WebSearch", {"query": "canary"}))
+    if opened.stdout.strip() != f"{SENTINEL_PREFIX}{probe_nonce}".strip():
+        pytest.exit(
+            "GATE CANARY FAILED (liveness): the resolved gate did not emit the "
+            "sentinel on a legitimate OPEN. A dead or wrong-build binary scores "
+            "like a perfect gate, so ASR would be meaningless. Aborting before "
+            f"any false result is written. argv={argv_str!r} "
+            f"stdout={opened.stdout!r} stderr={opened.stderr[-400:]!r}",
+            returncode=3,
+        )
+    # 2) Deny must mean deny, not death: an unknown/MCP tool MUST emit nothing.
+    denied = _probe(envelope("nonexistent_server__tool", {"x": 1}))
+    if denied.stdout.strip():
+        pytest.exit(
+            "GATE CANARY FAILED (deny-by-default): the resolved gate emitted a "
+            f"sentinel for an unknown/MCP tool. stdout={denied.stdout!r} "
+            f"argv={argv_str!r}",
+            returncode=3,
+        )
+    yield
+
+
+# --------------------------------------------------------------------------
 # ASR plugin
 # --------------------------------------------------------------------------
 
