@@ -141,6 +141,11 @@ agent shell is L0, whoever is driving it.
 confirms process env is inherited into PreToolUse children (no scrub) — L2
 `COSMIC_APPROVAL_TOKEN` export remains the approve path.
 
+**Seam contract (source-verified):** `docs/SEAM_CONTRACT.md` — pins
+`SOURCE_REV` `ba69d70…`, first-deny aggregation, **native fail-open on hook
+failure** (cosmic positive protocol is the fail-closed counter), sandbox
+`deny` semantics, subagent PreToolUse inheritance. Not docs-only.
+
 **Conformance:** `tests/test_privilege_ranking.py` — plain self-approve
 reproducer denies; base64/interpreter evasion through the gate denies; L2 env
 token still OPEN. Kernel floor tests when Seatbelt is present.
