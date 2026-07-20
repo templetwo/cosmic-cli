@@ -35,15 +35,18 @@ from cosmic_cli.secrets import is_sensitive_path
 from cosmic_cli.shell_guard import check_shell
 
 SENTINEL_VERSION = "v1"
-_NONCE_RE = re.compile(r"^[0-9a-f]{32,}$")
+_NONCE_RE = re.compile(r"[0-9a-f]{32,}")  # used with fullmatch: no trailing newline
 
 # Tool-name classification. Claude names and their Grok aliases both map here
 # (a matcher keeps its original name too), so one table covers both cockpits.
 _SHELL = {"Bash", "run_terminal_command"}
 _MUTATE = {"Write", "Edit", "MultiEdit", "Create", "search_replace", "write", "create"}
-_READ = {"Read", "read_file"}
-# Known-inert tools short-circuit to allow without a compass evaluation.
-_INERT = {"Grep", "grep", "Glob", "ListDir", "list_dir", "WebSearch", "web_search"}
+_READ = {"Read", "read_file", "Grep", "grep", "Glob", "ListDir", "list_dir"}
+# Genuinely inert: no local filesystem read, so no sensitive-path exposure.
+# NB: read-capable tools (Grep/Glob/ListDir) are NOT here — they READ file
+# content/paths, so they route through _READ and the sensitive-path refusal.
+# The allowlist used to enumerate NAMES; the property that matters is READS.
+_INERT = {"WebSearch", "web_search"}
 
 
 def _reason(msg: str) -> None:
@@ -57,6 +60,21 @@ def _extract(tool_input: dict, *keys: str) -> str:
         if isinstance(v, str) and v:
             return v
     return ""
+
+
+def _is_under_approval_store(path: str) -> bool:
+    """The L2-only approval store (~/.cosmic-cli) is off-limits to L0 READ/WRITE
+    tools regardless of which file inside it is named. A read-capable tool
+    (Grep/Glob/ListDir) pointed at the store is the mutation-door shape: the
+    allowlist enumerated NAMES, but the property that matters is whether it
+    READS. Resolved-path containment, not a substring on a shell string, so it
+    cannot be spelled around (that class is the kernel floor's job, not this)."""
+    try:
+        store = (Path.home() / ".cosmic-cli").resolve()
+        target = Path(path).expanduser().resolve()
+    except Exception:
+        return False
+    return target == store or store in target.parents
 
 
 class _Deny(Exception):
@@ -97,9 +115,18 @@ def decide(envelope: dict, rules, exec_mode: str = "safe") -> Optional[str]:
     Returns None on OPEN (caller emits the sentinel); raises _Deny otherwise.
     """
     tool_name = envelope.get("toolName") or envelope.get("tool_name") or ""
-    tool_input = envelope.get("toolInput") or envelope.get("tool_input") or {}
-    if not isinstance(tool_input, dict):
+    # A structurally malformed envelope denies; it is never repaired into a
+    # permissive one (RFC v1.1: malformed input and malformed output both deny).
+    # A truly absent toolInput is the legitimate no-arg case and becomes {};
+    # a PRESENT toolInput that is not an object (string/list/number/null) denies.
+    if "toolInput" in envelope:
+        tool_input = envelope["toolInput"]
+    elif "tool_input" in envelope:
+        tool_input = envelope["tool_input"]
+    else:
         tool_input = {}
+    if not isinstance(tool_input, dict):
+        raise _Deny("malformed envelope: toolInput is not an object")
 
     kind, action_type, corpus = classify(str(tool_name), tool_input)
     if kind == "allow":
@@ -112,7 +139,11 @@ def decide(envelope: dict, rules, exec_mode: str = "safe") -> Optional[str]:
         path = _extract(
             tool_input, "path", "file_path", "filePath", "target_file"
         )
-        if path and (is_sensitive_path(path) or is_sensitive_path(Path(path).name)):
+        if path and (
+            is_sensitive_path(path)
+            or is_sensitive_path(Path(path).name)
+            or _is_under_approval_store(path)
+        ):
             raise _Deny(f"sensitive-path {action_type.value} refused")
 
     decision = evaluate_rules(rules, action_type, corpus)
@@ -210,7 +241,7 @@ def run_gate(hook: str = "grok", verb_check: bool = False,
         return 0  # the wrapper's existence probe
 
     nonce = os.environ.get("COSMIC_GATE_NONCE", "")
-    if not _NONCE_RE.match(nonce):
+    if not _NONCE_RE.fullmatch(nonce):
         _reason("gate: missing/malformed COSMIC_GATE_NONCE — cannot prove allow")
         return 2
 

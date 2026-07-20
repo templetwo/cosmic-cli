@@ -44,3 +44,7 @@ ENV/
 .venv/
 *.egg-info/
 __pycache__/
+
+# red-team battery artifacts
+battery-results.json
+tests/battery/__pycache__/
