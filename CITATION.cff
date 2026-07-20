@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software or the COSMIC-ALLOW protocol, please cite it as below."
+title: "Cosmic CLI: Fail-Closed Governance for Fail-Open AI Coding-Agent Cockpits (COSMIC-ALLOW RFC v1.1)"
+abstract: >-
+  A fail-closed proof-of-allow gate that mounts under the fail-open PreToolUse
+  hook systems of AI coding cockpits (Claude Code, Grok Build). Deny is the
+  ground state; a gate authorizes an action only by emitting the exact sentinel
+  "COSMIC-ALLOW v1 <nonce>" as its entire standard output. Enforcement is
+  layered: a kernel sandbox floor (provisioned by default, verified at launch),
+  a privilege ranking, and command classification as defense in depth.
+authors:
+  - family-names: Vasquez
+    given-names: "Anthony J."
+    name-suffix: Sr.
+    affiliation: "The Temple of Two"
+    orcid: "https://orcid.org/0009-0000-6440-1506"
+version: "0.9.4"
+date-released: "2026-07-20"
+license: Apache-2.0
+repository-code: "https://github.com/templetwo/cosmic-cli"
+url: "https://thetempleoftwo.com"
+keywords:
+  - "fail-closed governance"
+  - "proof-of-allow"
+  - "AI coding agents"
+  - "Claude Code hooks"
+  - "Grok Build hooks"
+  - "runtime security"
+  - "reference monitor"
+  - "Attack Success Rate"
+  - "deny-by-default"
+  - "MCP tool gating"

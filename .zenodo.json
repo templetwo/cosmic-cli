@@ -1,0 +1,38 @@
+{
+  "title": "Fail-Closed Governance for Fail-Open Harnesses: A Cross-Vendor Proof-of-Allow Protocol for Coding Agents (COSMIC-ALLOW RFC v1.1)",
+  "upload_type": "software",
+  "language": "eng",
+  "access_right": "open",
+  "license": "Apache-2.0",
+  "version": "0.9.4",
+  "creators": [
+    {
+      "name": "Vasquez, Anthony J., Sr.",
+      "affiliation": "The Temple of Two",
+      "orcid": "0009-0000-6440-1506"
+    }
+  ],
+  "description": "COSMIC-ALLOW is a cross-vendor proof-of-allow protocol (RFC v1.1) that mounts a fail-closed governance gate under the fail-open PreToolUse hook systems of AI coding cockpits, specifically Claude Code and Grok Build. Deny is the ground state: a gate authorizes an action only by emitting, as its entire standard output, the exact string 'COSMIC-ALLOW v1 <nonce>', where the nonce is a per-invocation value of at least 128 bits delivered only through an environment variable. The gate treats standard input as opaque bytes, never reflects it, and never prints the environment. Enforcement is layered by design: a kernel sandbox floor (provisioned by default into the cockpit's native Landlock/Seatbelt config and verified at launch by a floor canary that refuses to start if the deny rules do not bind) is the load-bearing boundary; a privilege ranking makes approval flow only from a higher trust level through a channel a lower level cannot reach; command classification is defense in depth above them. Conformance is reported as Attack Success Rate against a hostile-payload battery that scores the gate contract in isolation; the reference gate-contract ASR is 3.3 percent, with the single residual class (shell-indirection reads of the approval-token store) covered by the kernel floor. The reference implementation is cosmic-cli. This work was co-created with AI collaborators (Claude and Grok seats) via a cross-architecture adversarial review method extending the author's prior IRIS Gate work; the fail-closed boundary is labeled honestly: it is a proof-of-allow gate with a kernel-enforced approval floor, not a complete-mediation reference monitor. Runtime-verified on macOS Seatbelt; source-and-test-verified for Linux Landlock.",
+  "keywords": [
+    "fail-closed governance",
+    "proof-of-allow",
+    "AI coding agents",
+    "Claude Code hooks",
+    "Grok Build hooks",
+    "runtime security",
+    "time-of-check-to-time-of-use",
+    "Attack Success Rate",
+    "deny-by-default",
+    "reference monitor",
+    "MCP tool gating"
+  ],
+  "related_identifiers": [
+    { "relation": "isSupplementTo", "identifier": "https://github.com/templetwo/cosmic-cli", "scheme": "url" },
+    { "relation": "references", "identifier": "https://github.com/templetwo/t2helix", "scheme": "url" },
+    { "relation": "references", "identifier": "10.17605/OSF.IO/T65VS", "scheme": "doi" },
+    { "relation": "references", "identifier": "10.5281/zenodo.19377144", "scheme": "doi" },
+    { "relation": "references", "identifier": "10.5281/zenodo.18810911", "scheme": "doi" },
+    { "relation": "cites", "identifier": "arXiv:2410.02644", "scheme": "arxiv" },
+    { "relation": "references", "identifier": "https://github.com/xai-org/grok-build", "scheme": "url" }
+  ]
+}
