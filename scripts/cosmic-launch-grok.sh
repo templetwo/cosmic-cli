@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# cosmic-launch-grok.sh — pre-flight boot canary, then exec grok (box 3 + launch)
+# cosmic-launch-grok.sh — boot canary + temple floor canary, then exec grok
 #
-# If any deny canary emits a sentinel, the allow canary fails, or the gate is
-# missing, the cockpit refuses to start.
+# Default install is fail-closed: GROK_SANDBOX=temple always for this launcher.
+# Floor canary refuses launch if the temple deny-list is missing or unbound.
 
 set -euo pipefail
 
@@ -23,6 +23,13 @@ if ! cosmic-cli gate --boot-canary; then
   exit 1
 fi
 
+echo "cosmic-launch-grok: running temple floor canary…" >&2
+if ! cosmic-cli gate --floor-canary; then
+  echo "cosmic-launch-grok: FLOOR CANARY FAILED — refuse cockpit launch" >&2
+  echo "cosmic-launch-grok: re-run: cosmic-cli init --grok --force" >&2
+  exit 1
+fi
+
 if ! command -v grok >/dev/null 2>&1; then
   if [[ -x "${HOME}/.grok/bin/grok" ]]; then
     PATH="${HOME}/.grok/bin:${PATH}"
@@ -30,9 +37,10 @@ if ! command -v grok >/dev/null 2>&1; then
 fi
 
 if ! command -v grok >/dev/null 2>&1; then
-  echo "cosmic-launch-grok: grok not on PATH after canary — refuse launch" >&2
+  echo "cosmic-launch-grok: grok not on PATH after canaries — refuse launch" >&2
   exit 1
 fi
 
-echo "cosmic-launch-grok: canary PASS — exec grok" >&2
+export GROK_SANDBOX=temple
+echo "cosmic-launch-grok: canaries PASS — exec grok (GROK_SANDBOX=temple)" >&2
 exec grok "$@"

@@ -1034,12 +1034,19 @@ def workflow(tasks, model: str) -> None:
     help="Box 3: deny+allow canaries against the real gate; exit 1 on fail.",
 )
 @click.option(
+    "--floor-canary",
+    is_flag=True,
+    help="Temple floor: sandbox.toml + default profile + live Seatbelt deny; exit 1 on fail.",
+)
+@click.option(
     "--mode",
     type=click.Choice(["safe", "interactive", "full"]),
     default="safe",
     show_default=True,
 )
-def gate_cmd(hook: str, verb_check: bool, boot_canary: bool, mode: str) -> None:
+def gate_cmd(
+    hook: str, verb_check: bool, boot_canary: bool, floor_canary: bool, mode: str
+) -> None:
     """COSMIC-ALLOW sentinel gate (RFC v1.1).
 
     Reads a cockpit PreToolUse envelope on stdin and emits
@@ -1048,15 +1055,19 @@ def gate_cmd(hook: str, verb_check: bool, boot_canary: bool, mode: str) -> None:
     from COSMIC_GATE_NONCE only, never the payload.
 
     ``--boot-canary`` runs the launcher pre-flight (box 3) and exits 0/1.
+    ``--floor-canary`` proves the temple sandbox floor is provisioned and binds.
     """
     if boot_canary:
         from cosmic_cli.boot_canary import run_boot_canary
 
         raise SystemExit(run_boot_canary())
+    if floor_canary:
+        from cosmic_cli.temple_floor import run_floor_canary
+
+        raise SystemExit(run_floor_canary())
     from cosmic_cli.gate import run_gate
 
     raise SystemExit(run_gate(hook=hook, verb_check=verb_check, exec_mode=mode))
-
 
 def main() -> None:
     cli()
