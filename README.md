@@ -222,4 +222,6 @@ pytest tests/battery/ -q           # red-team battery + ASR table
 
 ## License
 
-MIT · [Temple of Two](https://thetempleoftwo.com) · Anthony Vasquez Sr.
+Apache-2.0 · [Temple of Two](https://thetempleoftwo.com) · Anthony Vasquez Sr.
+
+See [LICENSE](LICENSE) and [NOTICE](NOTICE).
