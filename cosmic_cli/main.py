@@ -193,16 +193,22 @@ cosmic_cli = CosmicCLI()
 
 
 def _cosmic_version() -> str:
-    """Installed distribution version, falling back to the package constant."""
-    try:
-        from importlib.metadata import version as _dist_version
+    """The package constant, falling back to the installed distribution.
 
-        return _dist_version("cosmic-cli")
+    The code constant is the display source: it is what the working tree
+    actually is. Distribution metadata is frozen at install time, so under an
+    editable install it can lag a bump and report a version that is not the
+    code running. It stays here only to cover an import-less exotic packaging.
+    """
+    try:
+        from cosmic_cli import __version__
+
+        return __version__
     except Exception:
         try:
-            from cosmic_cli import __version__
+            from importlib.metadata import version as _dist_version
 
-            return __version__
+            return _dist_version("cosmic-cli")
         except Exception:
             return "dev"
 
