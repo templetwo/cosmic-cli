@@ -104,6 +104,42 @@ cosmic-cli helix accept-pause       # stage one approved retry, then re-run the 
 A non-interactive shell — the model's own L0 shell included — is refused here by
 design: it is not a TTY, so it cannot approve its own level.
 
+## Which build am I running?
+
+```bash
+cosmic-cli --version        # cosmic-cli <version> (<short commit>)
+cosmic-cli version          # same line, same bytes
+cosmic-cli doctor           # the full IDENTITY block
+```
+
+The commit is resolved at **run time**, not baked in at build time. grok bakes
+version and commit into its binary and has `build.rs` re-run whenever `.git/HEAD`
+moves, so the embed cannot go stale; pip has no equivalent trigger, and a commit
+baked into a Python package at install time would keep reporting the commit it
+was installed from forever. So this asks instead.
+
+When there is no commit to report — no checkout, no expanded archival file, or a
+clean tree sitting exactly on a tag, where the version already names the commit —
+the line degrades to `cosmic-cli <version>` and says nothing further. It never
+prints `unknown`.
+
+**An installed (non-editable) copy reports no commit either, on purpose.** git
+walks *up* from the directory it is asked about, and a venv usually lives inside
+the checkout, so a wheel installed into `venv/lib/.../site-packages` sits inside
+that checkout's work tree and `git describe` answers for it — with the
+*checkout's* commit, which has nothing to do with the bytes the installer copied
+in. That is exactly the state an offline wheel rollback leaves behind, where the
+checkout is still on the commit you just rolled *away* from. A hex sha looks
+authoritative and there is no room on a one-line surface to qualify it, so the
+line drops the claim rather than making a false one. `doctor` still shows the
+raw `git` row, because it prints the `package` row right beside it and a path
+under `site-packages` is the tell.
+
+`doctor` prints the same version inside a fuller IDENTITY block: the package
+directory, the interpreter, every distribution metadata dir claiming to be this
+project, and every `cosmic-cli` on your PATH. That block is where you find out
+that something *else* is answering to the name.
+
 ## Daily path
 
 ```bash
@@ -197,6 +233,155 @@ fixes), zero on every class except shell-indirection reads of the approval store
 (`privilege_escalation`), which the kernel floor covers by design. The number is
 reported honestly as two layers; the gate is not claimed to win the class the
 floor is there to win.
+
+## Rollback
+
+**Known-good** = the latest release tag whose battery run was green. Green is not
+0%: it means the archived ASR for that tag matches the recorded baseline (3.3%
+overall, residual confined to `privilege_escalation`, which the kernel floor
+owns). `battery-results.json` is local and gitignored, so the durable copy is the
+`conformance-results.json` deposited *beside* the code in that version's Zenodo
+record — a sibling file, not something inside the code archive and not something
+`git show <tag>` can produce.
+
+```bash
+scripts/snapshot-release.sh                        # retain the tag HEAD is on
+scripts/rollback.sh <tag>                          # restore, then verify
+COSMIC_CLI_HOME=/path/to/checkout scripts/rollback.sh <tag>
+```
+
+**Retain the artifact; do not reconstruct it.** This is grok's model: it keeps
+every downloaded binary in `~/.grok/downloads` and makes `~/.grok/bin/grok` a
+symlink into that directory, so rolling back is an atomic repoint to something
+already on the disk — upgrade and rollback are the same operation with a
+different version. Reconstruction is not rollback. `git checkout <tag> && pip
+install -e .` rebuilds the install from source and reaches the network for
+dependencies, which is exactly what you do not have on the day you need it.
+
+So `scripts/snapshot-release.sh` builds a wheel of the tag you are on and files
+it under `$COSMIC_CLI_HOME/.cosmic-releases/`:
+
+```
+wheels/<tag>/cosmic_cli-<version>-py3-none-any.whl   the artifact
+tags/<tag>                                           a pointer: its filename
+```
+
+**One directory per tag**, because a wheel's filename is not unique per tag.
+Wheels are named by PEP 440 version, and two tags can legitimately ship the same
+version — this repo's own history already contains such a pair. Filed flat, the
+second snapshot silently overwrites the first, and rollback then installs the
+wrong tag's code and reports success: you asked for one release and are running
+another. Nothing downstream can catch that, either, because the metadata
+`doctor --strict` compares against the code came out of the same wrong wheel, so
+it agrees with itself. The tag is validated as a flat name before it is used as
+a directory.
+
+The pointer file handles the other half: tags are named by whatever the tagger
+typed, so stripping a leading `v` happens to work right up until someone cuts a
+release candidate, where the tag's `-rc1` becomes `rc1` in the wheel name and the
+naive mapping quietly misses. The mapping is recorded once, at snapshot time,
+when both names are in hand, and written last — so it doubles as the marker that
+this tag is retained at all, and an interrupted snapshot never advertises a
+partial artifact.
+
+The wheel is built from **a pristine `git archive` export of the tag**, not from
+your working tree. An in-tree build ships more than the tag: setuptools copies
+sources into `build/lib` and never prunes files that vanished, so the second
+snapshot taken in a checkout is the union of every tree ever built there — a
+wheel filed under a tag can end up containing a module added two tags later.
+`build/` is gitignored, so the dirty-worktree guard cannot see it, and verifying
+that the zip is intact does not verify that it is *correct*. Exporting the tag
+sidesteps the whole class, and means snapshot never writes inside your checkout
+at all.
+
+`rollback.sh` then **prefers the retained wheel** and installs it with
+`--no-index` — no network, no build, and the artifact is the one that was
+verified good rather than one rebuilt now and assumed to match. If no wheel is
+retained for that tag it says so and falls back to `git checkout` + editable
+reinstall, which needs the network. It always names the path it took.
+
+### The two paths leave different states
+
+This is the part to be honest about. An editable install means *the checkout is
+the code*. A wheel install means *site-packages is the code* and the checkout is
+just a directory that happens to be nearby.
+
+- **Wheel rollback** replaces the installed package and **does not move your
+  checkout**. Right for: getting flying again with no network, or when you have
+  work in the checkout you do not want rewound. Cost: `git describe` still
+  reports the *checkout's* tag, because that is the repo containing the package
+  directory — so `doctor`'s `git` row can name a version the running code is
+  not. The `package` row is what tells you which state you are in: a path under
+  `venv/lib/.../site-packages` means the wheel is the code. `--version` detects
+  that same path and omits the commit rather than printing the checkout's, which
+  here would be the commit you just rolled away from.
+- **Git rollback** moves the checkout and reinstalls it editable, so checkout,
+  metadata and `git describe` all agree again. Right for: going back to a tag to
+  *work* on it, or any time you want one coherent state. Cost: needs the network,
+  rebuilds from source, and rewinds your tree.
+
+The offline install is forced (`--force-reinstall --no-deps`), which is not
+belt-and-braces. pip treats *the same version is already installed* as nothing to
+do — it says so and exits 0 — so without forcing, a rollback between two tags
+that share a version would install nothing and still report success. Forcing
+makes it unconditional: the bytes on disk come from the named artifact.
+
+`--no-deps` at both ends, deliberately: the retained artifact is a promise about
+*this code*, not about the whole dependency closure, and forcing a reinstall of
+that closure is something `--no-index` could not satisfy anyway. A backward
+rollback lands in a venv that already satisfies the older pins. When it does not,
+the failure surfaces at the **boot canary** — which imports the whole app rather
+than asking pip's opinion of it — instead of at the install. Either way it fails
+loudly rather than quietly reaching for a PyPI that may not be there, but it does
+mean this is not a bare-metal disaster floor. That is what the Zenodo record
+below is for.
+
+`.cosmic-releases/` is gitignored, and `snapshot-release.sh` also writes the
+ignore rule into `.git/info/exclude`. That second one is load-bearing rather than
+tidy: `.gitignore` is *versioned*, so a git-path rollback to a tag cut before this
+feature existed brings back a `.gitignore` without the entry, the retention dir
+shows up as untracked, and `rollback.sh`'s dirty-worktree guard would then refuse
+the next rollback over the artifact it was about to use. `.git/info/exclude` is
+local to the clone and survives any checkout, which is the lifetime these wheels
+actually have. `rollback.sh` re-writes it too, so an install that predates the
+rule heals itself.
+
+Both paths keep every guard, all of them before anything mutates: unknown tag
+refused, dirty worktree refused (the wheel path does not move the tree, but the
+tree is still where the identity report reads provenance from, so a dirty one
+leaves two states with nothing to tell them apart), missing venv refused. Then
+the result is proved — `gate --boot-canary` first, because that is the step that
+shows the gate is live and discriminating and it is the one verb every tag
+understands, then `doctor --strict`. Rollback only ever moves *backward*, so
+verification cannot require a flag that only newer code has: against a tag that
+predates `--strict` the script says so and runs plain `doctor` rather than
+reporting a rollback that worked as a failure.
+
+`doctor --strict` fails on drift in **this** install — metadata that disagrees
+with the code, a foreign checkout answering for `$COSMIC_CLI_HOME`, code with no
+provenance, or something else winning the PATH race. Another `cosmic-cli` sitting
+further down your PATH is printed as a note and is *not* fatal: it cannot change
+which code answered, and failing on it would make a successful rollback go red
+over unrelated PATH hygiene.
+
+**Disaster floor.** If the remote is gone or the tags are wrong, install from the
+Zenodo record. The DOI snapshot cannot rot.
+
+```bash
+pip install https://zenodo.org/records/<record>/files/cosmic-cli-<tag>.zip
+```
+
+That install has a `venv/bin/cosmic-cli` and no `~/bin` shim, which is a normal
+shape, not drift — `doctor --strict` verifies it clean.
+
+**A botched upgrade fails closed.** Deny is the absence of the sentinel, so a
+broken gate authorizes nothing, and the boot and floor canaries refuse cockpit
+launch. Rollback is therefore a convenience procedure to get flying again, not an
+incident procedure — nothing is open while you run it.
+
+Mission-file rollback is a different unit and a different tool: `checkpoint.py`
+restores the files one mission edited inside one workspace. This restores the
+installed code version.
 
 ## Mission Control dashboard
 

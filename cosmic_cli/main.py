@@ -15,11 +15,13 @@ from typing import Any, Dict, List, Optional
 import click
 from click.core import Command, Group
 from rich.console import Console
+from rich.markup import escape as markup_escape
 from rich.panel import Panel
 from xai_sdk import Client
 from xai_sdk.chat import assistant, system, user
 
 from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
+from cosmic_cli import buildinfo
 from cosmic_cli import helix_bridge
 from cosmic_cli.init_cmd import write_init
 from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
@@ -219,7 +221,8 @@ def _cosmic_version() -> str:
 COMMAND_GROUPS: List[tuple] = [
     ("MISSIONS", ["do", "tui", "review", "stargazer", "workflow"]),
     ("TALK", ["chat", "ask", "analyze"]),
-    ("GROUND CONTROL", ["doctor", "dashboard", "helix", "sessions", "init", "run", "gate"]),
+    ("GROUND CONTROL",
+     ["doctor", "version", "dashboard", "helix", "sessions", "init", "run", "gate"]),
 ]
 
 
@@ -315,11 +318,34 @@ class CosmicGroup(Group):
         )
 
 
+def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    """Eager -V/--version: answer and exit before the group body runs.
+
+    Eager and expose_value=False so nothing else happens first — no dashboard
+    spawn, no subcommand parsing, no API key prompt. click.echo rather than
+    console.print because this is one line meant to be read by a script as
+    easily as by a person, and Rich would recolour the digits inside it.
+    """
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(buildinfo.version_line())
+    ctx.exit()
+
+
 @click.group(
     cls=CosmicGroup,
     context_settings=dict(help_option_names=["-h", "--help"]),
 )
 @click.option("-v", "--verbose", is_flag=True, help="Verbose agent logs")
+@click.option(
+    "-V",
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_print_version,
+    help="Show which build is running, then exit.",
+)
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool) -> None:
     """Cosmic CLI — Grok agent for the terminal. Default model: grok-4.5."""
@@ -338,8 +364,11 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 DASHBOARD_PORT = int(os.environ.get("COSMIC_DASHBOARD_PORT", "4333"))
 # Subcommands that must never trigger dashboard side effects. `gate` is the
 # PreToolUse hook (fires on every tool call); its --boot-canary/--floor-canary/
-# --verb-check are flags on it, so excluding `gate` covers them too.
-_NO_DASHBOARD_SUBCOMMANDS = {"gate"}
+# --verb-check are flags on it, so excluding `gate` covers them too. `version`
+# is an identity probe that scripts and rollback verification call: answering
+# "which build is this" must not start a server as a side effect, and -V already
+# exits before this callback for exactly that reason.
+_NO_DASHBOARD_SUBCOMMANDS = {"gate", "version"}
 
 
 def _dashboard_log_path() -> Path:
@@ -867,9 +896,126 @@ def run_cmd(command_to_run: str, mode: str) -> None:
     sys.exit(result.returncode)
 
 
+# Label column for the IDENTITY rows; widest label is "distributions".
+_IDENTITY_LABEL_WIDTH = 14
+
+
+def _identity_print(markup: str) -> None:
+    """Print one IDENTITY line without ever breaking a path.
+
+    soft_wrap because every line in this block is a path or a sentence naming
+    one, and the whole point of the block is to hand the operator something they
+    can copy and act on. Rich's default folds an over-long token mid-word at the
+    console width — 80 when stdout is not a tty — which split
+    `cosmic_cli-0.9.4.dist-info` across two lines the moment doctor was piped
+    into a pager, a file or a bug report. A terminal still soft-wraps the line
+    for display; what must not happen is the break being baked into the bytes.
+    highlight=False throughout: the block is nothing but version numbers and
+    paths, precisely what Rich's auto-highlighter recolors into noise.
+    """
+    console.print(markup, highlight=False, soft_wrap=True)
+
+
+def _identity_row(label: str, value: str) -> None:
+    """One `label   value` row in the 1d skin.
+
+    Values are markup-escaped: they are paths and shebangs off this machine, and
+    a `[` in one of them would otherwise be parsed as a Rich tag and eat the
+    rest of the line — silently hiding the exact evidence the block exists for.
+    """
+    _identity_print(
+        f"  [{theme.MUTED}]{label.ljust(_IDENTITY_LABEL_WIDTH)}[/] {markup_escape(value)}"
+    )
+
+
+def _render_identity(ident: Dict[str, Any]) -> None:
+    """The IDENTITY block: which build answered, and what disagrees with it.
+
+    Two metadata sources agreeing is the NORMAL editable-install shape (in-repo
+    egg-info + venv dist-info), so the listing is informational and only
+    `signals` entries are called out. Every line goes through _identity_print,
+    which is where the no-mid-token-break rule lives.
+    """
+    process = ident.get("process", {})
+    _identity_print(f"\n[{theme.MUTED}]IDENTITY[/]")
+    _identity_print(
+        f"  [{theme.MUTED}]{'version'.ljust(_IDENTITY_LABEL_WIDTH)}[/] "
+        f"[{theme.CYAN}]{markup_escape(str(process.get('version', '?')))}[/]"
+    )
+    _identity_row("package", str(process.get("package_dir", "")))
+    _identity_row("interpreter", str(process.get("executable", "")))
+    _identity_row("argv0", str(process.get("argv0", "")))
+
+    git = ident.get("git", {})
+    describe = git.get("describe") or git.get("detail") or "unknown"
+    if git.get("source") == "archive":
+        describe = f"{describe} ({git.get('detail', '')})"
+    _identity_row("git", describe)
+
+    dists = ident.get("distributions", [])
+    if not dists:
+        _identity_row("distributions", "none visible (source-only tree)")
+    for i, dist in enumerate(dists):
+        agrees = dist.get("version") == process.get("version")
+        color = theme.MUTED if agrees else theme.WARN
+        _identity_print(
+            f"  [{theme.MUTED}]{('distributions' if i == 0 else '').ljust(_IDENTITY_LABEL_WIDTH)}[/] "
+            f"[{color}]{markup_escape(str(dist.get('version', '?')))}[/] "
+            f"[{theme.FAINT}]<-[/] {markup_escape(str(dist.get('path', '')))}"
+        )
+
+    hits = ident.get("path_hits", [])
+    if not hits:
+        _identity_row("PATH", "no cosmic-cli on PATH")
+    for i, hit in enumerate(hits):
+        color = theme.MUTED if hit.get("expected") else theme.WARN
+        via = hit.get("interpreter") or "no shebang"
+        _identity_print(
+            f"  [{theme.MUTED}]{('PATH' if i == 0 else '').ljust(_IDENTITY_LABEL_WIDTH)}[/] "
+            f"[{color}]{i + 1}[/] {markup_escape(str(hit.get('path', '')))} "
+            f"[{theme.FAINT}]→ {markup_escape(str(via))}[/]"
+        )
+
+    for err in ident.get("errors", []):
+        # A section that failed to gather must say so; a short report that reads
+        # as a clean one is the failure mode this whole block exists to prevent.
+        _identity_print(f"  [{theme.SERIOUS}]![/] could not gather {markup_escape(err)}")
+
+    signals = ident.get("signals", [])
+    for signal in signals:
+        # Prose, but prose with a path inside it — same no-mid-token rule, since
+        # the path is the actionable half of the sentence.
+        _identity_print(f"  [{theme.WARN}]![/] {markup_escape(signal)}")
+    for note in ident.get("notes", []):
+        # Dimmer glyph on purpose: notes are about the operator's box, not about
+        # this install, and they must not read as a reason the install is bad.
+        _identity_print(f"  [{theme.FAINT}]·[/] {markup_escape(note)}")
+    if not signals:
+        _identity_print(f"  [{theme.GOOD}]✓[/] no drift in this install")
+
+
+@cli.command("version")
+def version_cmd() -> None:
+    """Print which build is answering: version and short commit.
+
+    Both spellings exist because both get typed — grok ships `--version` and
+    `version` for the same reason. They render through the same function, and a
+    test pins them to the same bytes.
+    """
+    click.echo(buildinfo.version_line())
+
+
 @cli.command("doctor")
-def doctor_cmd() -> None:
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Exit 1 if THIS install has drifted; otherwise doctor always exits 0.",
+)
+def doctor_cmd(strict: bool) -> None:
     """Check API key, model access, and local tooling."""
+    identity = buildinfo.collect_identity()
+    _render_identity(identity)
+    console.print()
     console.print(f"[bold]Cosmic doctor[/bold] · default model [cyan]{DEFAULT_MODEL}[/cyan]")
     key = get_api_key(prompt=False)
     if not key:
@@ -899,19 +1045,26 @@ def doctor_cmd() -> None:
         except Exception as e:
             console.print(f"[red]✗[/red] models API failed: {e}")
 
-    console.print(f"  cwd: {os.getcwd()}")
-    console.print(f"  package: {Path(__file__).resolve().parent.parent}")
-    console.print(f"  echo file: {Path.home() / '.cosmic_echo.jsonl'}")
-    console.print(f"  sessions: {SESSION_DIR}")
-    console.print(f"  chat memory: {MEMORY_FILE}")
-    console.print(f"  home config: {Path.home() / '.cosmic-cli' / '.env'}")
+    # Same rule as the IDENTITY block: a path the operator cannot copy whole is
+    # not a path. soft_wrap keeps the break out of the bytes when doctor is
+    # piped; highlighting stays on because these lines are prose + path.
+    def _path_line(text: str) -> None:
+        console.print(text, soft_wrap=True)
+
+    _path_line(f"  cwd: {os.getcwd()}")
+    _path_line(f"  package: {Path(__file__).resolve().parent.parent}")
+    _path_line(f"  echo file: {Path.home() / '.cosmic_echo.jsonl'}")
+    _path_line(f"  sessions: {SESSION_DIR}")
+    _path_line(f"  chat memory: {MEMORY_FILE}")
+    _path_line(f"  home config: {Path.home() / '.cosmic-cli' / '.env'}")
     n_sess = len(list(SESSION_DIR.glob('*.jsonl'))) if SESSION_DIR.is_dir() else 0
     console.print(f"  session count: {n_sess}")
     # Helix substrate
     if helix_bridge.available():
         h = helix_bridge.health()
         console.print(
-            f"[green]✓[/green] T2Helix @ {helix_bridge.resolve_data_dir()}"
+            f"[green]✓[/green] T2Helix @ {helix_bridge.resolve_data_dir()}",
+            soft_wrap=True,
         )
         if h.get("ok") and isinstance(h.get("result"), dict):
             console.print(f"  session: {h['result'].get('session')}")
@@ -929,6 +1082,20 @@ def doctor_cmd() -> None:
     console.print("  cosmic-cli do --review '…'")
     console.print("  cosmic-cli review")
     console.print("  cosmic-cli sessions")
+
+    # Exit code last, after the full report. Doctor is a diagnostic: its other
+    # checks fail for unrelated reasons (no network, no key), so only --strict
+    # turns drift into a non-zero exit, and only drift in THIS install does —
+    # `notes` (stale cosmic-cli elsewhere on the box) are printed, never fatal,
+    # because rollback.sh verifies with this flag and a rollback that worked
+    # must not go red over the operator's global PATH hygiene.
+    if strict and identity.get("signals"):
+        console.print(
+            f"\n[{theme.WARN}]--strict[/]: "
+            f"{len(identity['signals'])} identity signal(s) — exit 1",
+            highlight=False,
+        )
+        raise SystemExit(1)
 
 
 @cli.command("helix")

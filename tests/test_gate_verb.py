@@ -123,6 +123,28 @@ def test_verb_check_exit0_no_stdout(ws, capsys, monkeypatch):
     assert code == 0 and out == ""
 
 
+def test_identity_line_is_stderr_only_and_carries_no_nonce(ws, capsys, monkeypatch):
+    """The gate names WHICH install answered — on stderr, and only there.
+
+    stdout stays byte-identical to the sentinel contract, and the line is built
+    before the nonce is ever read, so no formatting of it can leak the proof.
+    """
+    from cosmic_cli import __version__
+
+    code, out, err = _run(_env("run_terminal_command", command="echo hi"),
+                          capsys, monkeypatch, ws)
+    assert out.strip() == SENTINEL                # contract untouched
+    assert f"gate: cosmic-cli v{__version__}" in err
+    assert NONCE not in err                       # the proof never reaches stderr
+    assert "COSMIC-ALLOW" not in err              # nothing forgeable on stderr
+
+
+def test_verb_check_does_not_emit_the_identity_line(ws, capsys, monkeypatch):
+    """The wrapper's existence probe returns before it — one line per real call."""
+    code, out, err = _run(None, capsys, monkeypatch, ws, verb_check=True)
+    assert "gate: cosmic-cli" not in err
+
+
 def test_missing_nonce_no_sentinel(ws, capsys, monkeypatch):
     code, out, err = _run(_env("run_terminal_command", command="echo hi"),
                           capsys, monkeypatch, ws, nonce=None)
