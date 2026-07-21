@@ -13,11 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import click
-import pyfiglet
 from click.core import Command, Group
 from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
 from xai_sdk import Client
 from xai_sdk.chat import assistant, system, user
 
@@ -33,6 +31,7 @@ from cosmic_cli.review import (
 )
 from cosmic_cli.rules import load_rules_from_markdown
 from cosmic_cli.shell_guard import check_shell
+from cosmic_cli import theme
 from cosmic_cli.ui import DirectivesUI
 
 # Quiet noisy library logs by default; --verbose re-enables agent INFO.
@@ -193,33 +192,71 @@ class CosmicCLI:
 cosmic_cli = CosmicCLI()
 
 
+def _cosmic_version() -> str:
+    """Installed distribution version, falling back to the package constant."""
+    try:
+        from importlib.metadata import version as _dist_version
+
+        return _dist_version("cosmic-cli")
+    except Exception:
+        try:
+            from cosmic_cli import __version__
+
+            return __version__
+        except Exception:
+            return "dev"
+
+
+# Help is grouped by what you are trying to do, not by alphabet. Any command
+# not named here still shows up, under MORE — the map curates order, it never
+# hides a command.
+COMMAND_GROUPS: List[tuple] = [
+    ("MISSIONS", ["do", "tui", "review", "stargazer", "workflow"]),
+    ("TALK", ["chat", "ask", "analyze"]),
+    ("GROUND CONTROL", ["doctor", "dashboard", "helix", "sessions", "init", "run", "gate"]),
+]
+
+
+def _lockup() -> str:
+    """The one-line brand lockup that replaces the figlet panel on --help."""
+    title = "C O S M I C  C L I"
+    tagline = "Grok agent for the terminal"
+    meta = theme.joined(
+        [f"v{_cosmic_version()}", f"default model {DEFAULT_MODEL}", theme.helix_mark()]
+    )
+    top_fill = max(3, 66 - len(title) - len(tagline) - 9)
+    bot_fill = max(3, 66 - len(meta) - 6)
+    return (
+        f"[{theme.SPECK}]╭─ ✦ [/][{theme.CYAN}]{title}[/]"
+        f"[{theme.SPECK}] {'─' * top_fill} [/]{tagline}[{theme.SPECK}] ─╮[/]\n"
+        f"[{theme.SPECK}]╰──[/] {meta} [{theme.SPECK}]{'─' * bot_fill}╯[/]"
+    )
+
+
 class CosmicHelpFormatter(click.HelpFormatter):
-    def write_usage(self, usage: str, prefix: Optional[str] = None) -> None:
-        console.print(
-            Panel(
-                Text(
-                    pyfiglet.figlet_format("Cosmic CLI", font="small"),
-                    justify="center",
-                    style="bold magenta",
-                ),
-                border_style="blue",
-                subtitle=f"model default: {DEFAULT_MODEL}",
-            )
-        )
-        super().write_usage(usage, prefix)
+    # `highlight=False` throughout: Rich's auto-highlighter otherwise recolors
+    # version numbers, model names and parenthesised text inside help copy.
+    def write_usage(self, prog: str, args: str = "", prefix: Optional[str] = None) -> None:
+        console.print(_lockup(), highlight=False)
+        console.print()
+        line = " ".join(part for part in (prog, args) if part).strip()
+        console.print(f"[{theme.MUTED}]USAGE[/]   {line}", highlight=False)
 
     def write_heading(self, heading: str) -> None:
-        console.print(f"[bold yellow]{heading}[/bold yellow]")
+        console.print(f"\n[{theme.MUTED}]{heading.upper()}[/]", highlight=False)
 
     def write_text(self, text: str) -> None:
-        console.print(text)
+        console.print(text, highlight=False)
 
     def write_dl(
-        self, rows: List[tuple], col_max: int = 30, col_spacing: int = 2
+        self, rows, col_max: int = 30, col_spacing: int = 2
     ) -> None:
+        rows = list(rows)
+        width = min(col_max, max((len(term) for term, _ in rows), default=0) + 2)
         for term, definition in rows:
             console.print(
-                f"  [bold cyan]{term.ljust(col_max)}[/bold cyan] {definition}"
+                f"  [{theme.CYAN}][b]{term.ljust(width)}[/b][/] {definition}",
+                highlight=False,
             )
 
 
@@ -233,6 +270,43 @@ class CosmicCommand(Command):
 class CosmicGroup(Group):
     command_class = CosmicCommand
     group_class = type
+
+    def get_help(self, ctx):
+        formatter = CosmicHelpFormatter(width=ctx.terminal_width)
+        self.format_help(ctx, formatter)
+        return formatter.getvalue().rstrip("\n")
+
+    def format_commands(self, ctx, formatter) -> None:
+        """Emit commands under MISSIONS / TALK / GROUND CONTROL instead of one
+        flat `Commands` list. Anything uncategorised lands in MORE so a newly
+        added command can never silently vanish from --help."""
+        available = {}
+        for name in self.list_commands(ctx):
+            cmd = self.get_command(ctx, name)
+            if cmd is not None and not getattr(cmd, "hidden", False):
+                available[name] = cmd
+
+        for heading, names in COMMAND_GROUPS:
+            rows = [
+                (name, available.pop(name).get_short_help_str(60))
+                for name in names
+                if name in available
+            ]
+            if rows:
+                formatter.write_heading(heading)
+                formatter.write_dl(rows)
+
+        if available:  # never drop a command we did not think to categorise
+            formatter.write_heading("MORE")
+            formatter.write_dl(
+                [(n, c.get_short_help_str(60)) for n, c in sorted(available.items())]
+            )
+
+        console.print(
+            f"\n[{theme.FAINT}]try[/]  cosmic-cli do [{theme.TEXT}]'analyze data.txt'[/]"
+            f"   [{theme.FAINT}]·[/]   cosmic-cli tui",
+            highlight=False,
+        )
 
 
 @click.group(
@@ -603,6 +677,21 @@ def review_cmd(
         sys.exit(3)
 
 
+def _chat_meta(response, elapsed: float) -> str:
+    """`412 tokens · 1.8s` — the token count is omitted when the SDK does not
+    report one, rather than guessed."""
+    tokens = None
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        for attr in ("completion_tokens", "output_tokens", "total_tokens"):
+            value = getattr(usage, attr, None)
+            if isinstance(value, int) and value > 0:
+                tokens = value
+                break
+    parts = ([f"{tokens} tokens"] if tokens else []) + [f"{elapsed:.1f}s"]
+    return " · ".join(parts)
+
+
 @cli.command("chat")
 @click.option("--model", default=DEFAULT_MODEL, show_default=True)
 def chat_cmd(model: str) -> None:
@@ -610,27 +699,59 @@ def chat_cmd(model: str) -> None:
     chat_instance = cosmic_cli.initialize_chat(load_history=True, model=model)
     if chat_instance is None:
         return
-    console.print(f"[green]Chat · {model} · quit/exit to leave, reset clears history[/green]\n")
+
+    def _header(instance) -> None:
+        loaded = len(getattr(instance, "messages", []) or [])
+        console.print(
+            f"[{theme.CYAN}][b]✦ cosmic chat[/b][/]"
+            f"[{theme.MUTED}] · {model} · history loaded ({loaded} msgs)[/]",
+            highlight=False,
+        )
+        console.print(theme.rule(), highlight=False)
+
+    _header(chat_instance)
+    console.print(
+        f"[{theme.FAINT}]reset clears history · quit to leave[/]", highlight=False
+    )
     while True:
-        user_input = click.prompt("You", type=str, prompt_suffix="> ")
+        user_input = click.prompt(
+            click.style("◉ you", fg=(255, 255, 255), bold=True),
+            type=str,
+            prompt_suffix="   ",
+        )
         if user_input.lower() in ("quit", "exit"):
             cosmic_cli.save_memory(getattr(chat_instance, "messages", []))
-            console.print("[yellow]bye[/yellow]")
+            console.print(f"[{theme.MUTED}]bye[/]", highlight=False)
             break
         if user_input.lower() == "reset":
             chat_instance = cosmic_cli.initialize_chat(load_history=False, model=model)
             cosmic_cli.save_memory([])
-            console.print("[yellow]history cleared[/yellow]")
+            console.print(f"[{theme.MUTED}]history cleared[/]", highlight=False)
+            _header(chat_instance)
             continue
         chat_instance.append(user(user_input))
         try:
+            started = time.time()
             response = chat_instance.sample()
+            elapsed = time.time() - started
             prefix = random.choice(COSMIC_QUOTES)
-            console.print(f"[blue]{prefix}[/blue] {response.content}")
+            console.print()
+            # The cosmic quote is the model clearing its throat — dim italic on
+            # its own line, so the answer proper starts clean underneath.
+            console.print(
+                f"[{theme.MAGENTA}][b]✦ grok  [/b][/][{theme.FAINT}][i]{prefix}[/i][/]",
+                highlight=False,
+            )
+            for line in str(response.content).splitlines() or [""]:
+                console.print(f"        {line}", highlight=False)
+            console.print(f"[{theme.FAINT}]        {_chat_meta(response, elapsed)}[/]",
+                          highlight=False)
+            console.print(theme.rule(), highlight=False)
             chat_instance.append(assistant(response.content))
             cosmic_cli.save_memory(getattr(chat_instance, "messages", []))
         except Exception as e:
-            console.print(f"[red]{e}[/red]")
+            console.print(f"[{theme.CRIT}]        {e}[/]", highlight=False)
+            console.print(theme.rule(), highlight=False)
 
 
 @cli.command("ask")

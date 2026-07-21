@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from textual.app import App, ComposeResult
 from textual.widgets import (
     DataTable,
@@ -12,28 +13,81 @@ from textual.widgets import (
 from textual.containers import Vertical, Horizontal, Container
 from textual.screen import ModalScreen
 from textual.reactive import reactive
-from pyfiglet import Figlet
+from rich.text import Text
 from cosmic_cli.agents import StargazerAgent
+from cosmic_cli import theme
 
 
 class APIKeyScreen(ModalScreen[str]):
     """Modal prompt for xAI API key using Textual best practices.
     Password-masked Input, supports Enter (on_submitted) and explicit Button.
+
+    Wears the 1d skin: dim scrim over the board, cyan focus border, and copy
+    that says plainly what happens to the key.
+    """
+
+    BINDINGS = [("escape", "cancel_key", "Cancel")]
+
+    DEFAULT_CSS = f"""
+    APIKeyScreen {{
+        align: center middle;
+        /* `<color> <percentage>` is the form Textual composites over the
+           screen below; rgba() renders opaque and hides the board. */
+        background: #04060a 45%;
+    }}
+    APIKeyScreen > #key_dialog {{
+        width: 54;
+        height: auto;
+        padding: 1 2;
+        background: {theme.SURFACE};
+        border: round {theme.BORDER};
+    }}
+    APIKeyScreen #prompt {{
+        color: {theme.CYAN};
+        text-style: bold;
+        text-align: left;
+        margin-bottom: 0;
+    }}
+    APIKeyScreen #key_hint {{
+        color: {theme.MUTED};
+        margin-bottom: 1;
+    }}
+    APIKeyScreen #api_key_input {{
+        background: {theme.PAGE};
+        border: tall {theme.BORDER};
+    }}
+    APIKeyScreen #api_key_input:focus {{
+        border: tall {theme.CYAN};
+    }}
+    APIKeyScreen #key_buttons {{
+        height: auto;
+        margin-top: 1;
+    }}
+    APIKeyScreen #key_env {{
+        color: {theme.FAINT};
+        margin-top: 1;
+    }}
     """
 
     def compose(self) -> ComposeResult:
-        yield Static("🔑 Enter your xAI API key (Ctrl+K to open)", id="prompt")
-        yield Input(
-            placeholder="xai-... or sk-...",
-            password=True,
-            id="api_key_input",
-        )
-        with Horizontal(id="key_buttons"):
-            yield Button("Submit", variant="primary", id="submit_key")
-            yield Button("Cancel", variant="default", id="cancel_key")
+        with Vertical(id="key_dialog"):
+            yield Static("✦ xAI API key", id="prompt")
+            yield Static("session only — never written to disk", id="key_hint")
+            yield Input(
+                placeholder="xai-… or sk-…",
+                password=True,
+                id="api_key_input",
+            )
+            with Horizontal(id="key_buttons"):
+                yield Button("⏎ SUBMIT", variant="primary", id="submit_key")
+                yield Button("esc CANCEL", variant="default", id="cancel_key")
+            yield Static("env: XAI_API_KEY", id="key_env")
 
     def on_mount(self) -> None:
         self.query_one("#api_key_input", Input).focus()
+
+    def action_cancel_key(self) -> None:
+        self.dismiss(None)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "api_key_input":
@@ -62,45 +116,75 @@ class DirectivesUI(App):
     """
 
     BINDINGS = [
-        ("ctrl+k", "prompt_api_key", "Set API Key"),
-        ("ctrl+c", "quit", "Quit"),
-        ("q", "quit", "Quit"),
-        ("enter", "deploy_directive", "Deploy"),
+        ("ctrl+k", "prompt_api_key", "api key"),
+        ("ctrl+c", "quit", "quit"),
+        ("q", "quit", "quit"),
+        ("enter", "deploy_directive", "deploy"),
     ]
 
-    CSS = """
-    DataTable { margin: 1; height: 12; }
-    Static.banner { color: cyan; text-align: center; margin: 1; }
-    RichLog { height: 10; border: round cyan; margin: 1; }
-    Horizontal#input_row { margin: 1; }
-    #prompt { text-align: center; color: yellow; margin-bottom: 1; }
-    #key_buttons { margin-top: 1; }
+    TITLE = "✦ COSMIC CLI"
+    SUB_TITLE = "stargazer"
+
+    # The 1d skin. Truecolor hexes; nearest ANSI-256 degrades fine.
+    CSS = f"""
+    Screen {{ background: {theme.PAGE}; color: {theme.TEXT}; }}
+    Header {{ background: {theme.SURFACE}; color: {theme.MUTED}; }}
+    HeaderTitle {{ color: {theme.CYAN}; text-style: bold; }}
+    Static.banner {{ text-align: center; margin: 1 0 0 0; }}
+    DataTable {{ margin: 1 2; height: 12; background: {theme.PAGE}; }}
+    DataTable > .datatable--header {{ color: {theme.MUTED}; text-style: bold; }}
+    DataTable > .datatable--cursor {{ background: {theme.CURSOR}; }}
+    Input {{ background: {theme.SURFACE}; border: tall {theme.BORDER}; }}
+    Input:focus {{ border: tall {theme.CYAN}; }}
+    Button#deploy_btn {{ background: {theme.BLUE}; color: #ffffff; text-style: bold; }}
+    RichLog {{
+        height: 10;
+        margin: 0 2 1 2;
+        background: {theme.PANEL};
+        border: round {theme.BORDER};
+    }}
+    Horizontal#input_row {{ height: auto; margin: 1 2; }}
+    Horizontal#input_row > Input {{ width: 1fr; }}
+    Horizontal#input_row > Button {{ width: auto; min-width: 14; margin-left: 1; }}
+    Footer {{ background: {theme.SURFACE}; }}
+    FooterKey {{ background: {theme.SURFACE}; color: {theme.MUTED}; }}
+    FooterKey > .footer-key--key {{ background: {theme.CYAN}; color: {theme.PAGE}; }}
+    FooterKey > .footer-key--description {{ color: {theme.MUTED}; }}
     """
 
     def __init__(self, testing: bool = False):
         super().__init__()
         self.agents = {}
         self.show_logs = {}
-        self.figlet = Figlet(font='doom')
+        # Arrival times for agent log lines. StargazerAgent stores log strings
+        # without timestamps, so the honest stamp is when this UI first saw the
+        # line — recorded once, never re-derived, so old lines don't drift.
+        self.log_times = {}
+        self.figlet = theme.cosmic_figlet('doom')
         self.testing = testing
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static(self.figlet.renderText('COSMIC CLI'), classes="banner")
+        yield Static(
+            theme.gradient_banner(self.figlet.renderText('COSMIC CLI')),
+            classes="banner",
+            markup=True,
+        )
         yield DataTable(id="directives")
         with Horizontal(id="input_row"):
             yield Input(
-                placeholder="Enter directive (e.g. analyze data.txt)  |  Ctrl+K for API key",
+                placeholder="directive… (ctrl+k api key)",
                 id="directive_input",
             )
-            yield Button("Deploy", id="deploy_btn", variant="primary")
+            yield Button("▸ DEPLOY", id="deploy_btn", variant="primary")
         yield RichLog(id="logs", highlight=True, markup=True)
         yield Footer()
 
     def on_mount(self):
         table = self.query_one("#directives", DataTable)
-        table.add_columns("Directive", "Status", "Level", "Score", "Logs")
+        table.add_columns("DIRECTIVE", "STATUS", "MODEL", "STEPS", "LOGS")
         table.cursor_type = "row"
+        self.sub_title = theme.joined(["stargazer", theme.helix_mark()])
         # Prompt for key early (on_mount) unless testing or already set
         if not (os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")) and not self.testing:
             self.action_prompt_api_key()
@@ -167,20 +251,41 @@ class DirectivesUI(App):
         else:
             self.notify(f"Directive '{directive}' not found!", severity="error")
 
+    def _stamp_logs(self, directive: str, count: int) -> list:
+        """Return arrival stamps for `directive`, minting them for new lines only."""
+        stamps = self.log_times.setdefault(directive, [])
+        if len(stamps) < count:
+            now = datetime.now().strftime("%H:%M:%S")
+            stamps.extend([now] * (count - len(stamps)))
+        return stamps
+
     def _refresh_panel(self, agent=None):
         """Safe refresh: clear/rebuild table + write to RichLog (no remove_children hacks on dynamic Statics)."""
         try:
             table = self.query_one("#directives", DataTable)
             table.clear()
             for dir, ag in self.agents.items():
-                level = getattr(ag, "model", "N/A")
-                score = float(getattr(ag, "steps_taken", 0) or 0)
-                log_action = (
-                    f"Show Logs ({len(ag.logs)})"
-                    if not self.show_logs.get(dir)
-                    else f"Hide Logs ({len(ag.logs)})"
+                model = getattr(ag, "model", "N/A")
+                status = str(getattr(ag, "status", "ready"))
+                bar = theme.step_bar(
+                    getattr(ag, "steps_taken", 0),
+                    getattr(ag, "max_steps", 20),
+                    status,
                 )
-                table.add_row(dir, ag.status, level, f"{score:.3f}", log_action, key=dir)
+                count = len(ag.logs)
+                logs_cell = (
+                    f"[{theme.CYAN}]▾ {count}[/]"
+                    if self.show_logs.get(dir)
+                    else f"[{theme.MUTED}]{count}[/]"
+                )
+                table.add_row(
+                    dir,
+                    Text.from_markup(theme.status_markup(status)),
+                    model,
+                    Text.from_markup(bar),
+                    Text.from_markup(logs_cell),
+                    key=dir,
+                )
 
             # Modern logs via RichLog
             log_widget = self.query_one("#logs", RichLog)
@@ -188,9 +293,10 @@ class DirectivesUI(App):
             for dir, show in list(self.show_logs.items()):
                 if show and dir in self.agents:
                     ag = self.agents[dir]
-                    log_widget.write(f"[bold magenta]--- Stargazer Logs: {dir} ---[/]")
-                    for line in ag.logs[-50:]:  # safety cap
-                        log_widget.write(str(line))
+                    stamps = self._stamp_logs(dir, len(ag.logs))
+                    log_widget.write(theme.log_header(dir))
+                    for line, stamp in list(zip(ag.logs, stamps))[-50:]:  # safety cap
+                        log_widget.write(theme.agent_log_line(line, stamp))
         except Exception:
             # Guard against refresh during shutdown / testing partial mounts
             pass
