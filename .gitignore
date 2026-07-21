@@ -48,3 +48,6 @@ __pycache__/
 # red-team battery artifacts
 battery-results.json
 tests/battery/__pycache__/
+
+# local checkpoint noise (never commit)
+.cosmicbak/
