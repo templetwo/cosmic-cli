@@ -51,3 +51,9 @@ tests/battery/__pycache__/
 
 # local checkpoint noise (never commit)
 .cosmicbak/
+
+# retained release wheels (scripts/snapshot-release.sh). Load-bearing, not
+# hygiene: rollback.sh refuses to run on a dirty worktree, and an untracked
+# retention dir is exactly what makes `git status --porcelain` non-empty. Left
+# unignored, taking a snapshot would disarm the rollback it exists to serve.
+.cosmic-releases/

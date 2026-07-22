@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cosmic-cli"
-version = "0.9.4"
+dynamic = ["version"]
 description = "Temple runtime avionics: Grok Stargazer, T2Helix memory, policy kernel + action gateway"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -54,6 +54,12 @@ Repository = "https://github.com/templetwo/cosmic-cli"
 Issues = "https://github.com/templetwo/cosmic-cli/issues"
 [project.scripts]
 cosmic-cli = "cosmic_cli.main:cli"
+
+# One version, one place. setuptools reads this attribute by static AST parse,
+# so cosmic_cli/__init__.py is never executed at build time and the heavy
+# relative imports at the top of it cost nothing here.
+[tool.setuptools.dynamic]
+version = {attr = "cosmic_cli.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]

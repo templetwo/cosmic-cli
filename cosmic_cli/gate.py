@@ -240,6 +240,21 @@ def run_gate(hook: str = "grok", verb_check: bool = False,
     if verb_check:
         return 0  # the wrapper's existence probe
 
+    # One stderr line proving WHICH install answered — the question a stale
+    # rogue cosmic-cli on PATH otherwise makes unanswerable after the fact.
+    # Built only from names already bound in this module: no subprocess, no
+    # metadata scan, no disk read, no import (sys.modules is a dict lookup, and
+    # the parent package is guaranteed present because this module's own
+    # `from cosmic_cli.gateway import ...` executed it; Path(...).parent is
+    # lexical). The wrapper runs the gate with 2>/dev/null, so this is invisible
+    # in the production hook flow and cannot touch the RFC v1.1 stdout contract;
+    # it exists for the battery and for manual invocation. Deliberately BEFORE
+    # the nonce is read, so no formatting of it can ever reach stderr.
+    _reason(
+        f"gate: cosmic-cli v{sys.modules['cosmic_cli'].__version__} "
+        f"pkg={Path(__file__).parent} argv0={sys.argv[0]}"
+    )
+
     nonce = os.environ.get("COSMIC_GATE_NONCE", "")
     if not _NONCE_RE.fullmatch(nonce):
         _reason("gate: missing/malformed COSMIC_GATE_NONCE — cannot prove allow")
