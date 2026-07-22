@@ -393,7 +393,10 @@ cosmic-cli dashboard --no-open     # start only
 ```
 
 Binds `127.0.0.1`, serves `SELECT`-only chronicle views (no approval tokens), and
-never runs on the `gate` hot path. Opt out entirely with `COSMIC_NO_DASHBOARD=1`.
+logs to `~/.cosmic-cli-logs/` — never into the protected `~/.cosmic-cli/` token
+store. Auto-start is an allowlist (`do`, `stargazer`, `workflow`, `tui`, `chat`),
+so `gate` and every future subcommand are side-effect free unless they opt in.
+Opt out entirely with `COSMIC_NO_DASHBOARD=1`.
 
 ## Horizon
 

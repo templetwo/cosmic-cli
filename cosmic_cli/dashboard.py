@@ -11,9 +11,10 @@ Sources:
 Run:  cosmic-cli dashboard   (or: python -m cosmic_cli.dashboard [port])
 Open: http://localhost:4333
 
-Auto-start: the cli group callback ensures this server is running on every
-cosmic-cli invocation (opt out with COSMIC_NO_DASHBOARD=1), and the launchd
-agent com.templetwo.cosmic-dashboard keeps it alive across reboots.
+Auto-start: the cli group callback starts this server only for the subcommands
+in main._DASHBOARD_SUBCOMMANDS — an allowlist, so anything else (the `gate` hook
+above all) stays side-effect free. Opt out entirely with COSMIC_NO_DASHBOARD=1.
+The launchd agent com.templetwo.cosmic-dashboard keeps it alive across reboots.
 """
 import json
 import sqlite3

@@ -352,23 +352,36 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     set_verbose(verbose)
-    # The security gate runs as the PreToolUse hook on every tool call and must
-    # stay a pure, side-effect-free classifier — no dashboard spawn, no write
-    # into the ranking-protected token-store dir on that hot path. Auto-start the
-    # dashboard only for human/interactive invocations, never for `gate` (which
-    # also covers --boot-canary/--floor-canary/--verb-check as flags).
-    if ctx.invoked_subcommand not in _NO_DASHBOARD_SUBCOMMANDS:
+    # Allowlist, not denylist: a subcommand must opt IN to the dashboard.
+    # `invoked_subcommand` is None for a bare `cosmic-cli`, and None is not in the
+    # set, so the no-subcommand path is covered by the same construction.
+    if ctx.invoked_subcommand in _DASHBOARD_SUBCOMMANDS:
         _ensure_dashboard()
 
 
 DASHBOARD_PORT = int(os.environ.get("COSMIC_DASHBOARD_PORT", "4333"))
-# Subcommands that must never trigger dashboard side effects. `gate` is the
-# PreToolUse hook (fires on every tool call); its --boot-canary/--floor-canary/
-# --verb-check are flags on it, so excluding `gate` covers them too. `version`
-# is an identity probe that scripts and rollback verification call: answering
-# "which build is this" must not start a server as a side effect, and -V already
-# exits before this callback for exactly that reason.
-_NO_DASHBOARD_SUBCOMMANDS = {"gate", "version"}
+# The ONLY subcommands allowed to auto-start Mission Control. This is an
+# allowlist and not a denylist on purpose: `gate` is the PreToolUse hook and
+# fires on every tool call, so a forgotten entry must fail SAFE. Under a denylist
+# every future subcommand defaults to spawning a server and writing a log, and
+# whoever adds the next gate-shaped command has to remember to exclude it —
+# forgetting is silent and fails OPEN. Inverted, forgetting costs a nuisance
+# (no dashboard) instead of a side effect on a hot, protected path.
+#
+# Membership rule: a human typed it and is going to sit with it. Missions that
+# stream steps into the chronicle the dashboard reads (`do`, its `stargazer
+# deploy` and `workflow` spellings) plus the two attended surfaces (`tui`,
+# `chat`). Everything else is out, and deliberately so:
+#   gate/version   never — hook hot path and identity probe (scripts, rollback)
+#   dashboard      opts in at its own call site, with its own --port; listing it
+#                  here would spawn a second server on the default port first
+#   doctor         a health check that starts a server has changed what it reports
+#   ask/analyze    one-shot, no agent loop, the obvious things to put in a pipe
+#   review         Cold Eye seat — runs from CI and post-mission automation
+#   run            policy + blocklist path; keep classifiers side-effect free
+#   helix          memory substrate, called programmatically by hooks and agents
+#   sessions/init  read-only listing and a one-shot scaffolder; nothing to watch
+_DASHBOARD_SUBCOMMANDS = {"do", "stargazer", "workflow", "tui", "chat"}
 
 
 def _dashboard_log_path() -> Path:
@@ -422,7 +435,13 @@ def dashboard_cmd(port: int, no_open: bool) -> None:
             if _dashboard_running(port):
                 break
             time.sleep(0.1)
-    status = "running" if _dashboard_running(port) else "failed to start (see ~/.cosmic-cli/dashboard.log)"
+    # Derived, never spelled again: this line used to hardcode the pre-move
+    # ~/.cosmic-cli/dashboard.log and sent the operator into the protected token
+    # store looking for a log that had already been relocated out of it.
+    if _dashboard_running(port):
+        status = "running"
+    else:
+        status = f"failed to start (see {_dashboard_log_path()})"
     console.print(f"Mission Control · {status} · [link={url}]{url}[/link]")
     if not no_open and _dashboard_running(port):
         subprocess.run(["open", url], check=False)
