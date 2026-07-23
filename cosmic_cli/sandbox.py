@@ -108,14 +108,84 @@ def _which(name: str) -> Optional[str]:
     return None
 
 
-def wrap_argv_for_l0_shell(cmd: str, *, shell: str = "/bin/zsh") -> List[str]:
-    """Return argv to run *cmd* under the L0 floor when available.
+# Cached probe: binary present ≠ seatbelt can apply. Nested sandboxes (Grok Build
+# under Seatbelt, CI, some macOS policies) return "sandbox_apply: Operation not
+# permitted" and every L0 shell would fail closed wrongly. Probe once per process.
+_SEATBELT_APPLIES: Optional[bool] = None
 
-    On macOS: sandbox-exec -f profile shell -c cmd
-    Elsewhere: bare shell -c cmd (classification remains DiD; floor is macOS-first).
+
+def reset_seatbelt_probe() -> None:
+    """Test hook: clear the seatbelt usability cache."""
+    global _SEATBELT_APPLIES
+    _SEATBELT_APPLIES = None
+
+
+def mark_seatbelt_unusable() -> None:
+    """Sticky: seatbelt cannot apply in this process (nested sandbox observed)."""
+    global _SEATBELT_APPLIES
+    _SEATBELT_APPLIES = False
+
+
+def seatbelt_applies(*, force_probe: bool = False) -> bool:
+    """True only when sandbox-exec can actually apply a profile here.
+
+    Classification + TTY ranking remain when this is False; we just skip a
+    kernel floor that cannot bind so missions do not hang on every SHELL.
     """
-    shell_bin = shell if Path(shell).is_file() else ( _which("zsh") or _which("bash") or "/bin/sh")
-    if platform.system() == "Darwin" and sandbox_available():
+    global _SEATBELT_APPLIES
+    if _SEATBELT_APPLIES is not None and not force_probe:
+        return _SEATBELT_APPLIES
+    if platform.system() != "Darwin" or not sandbox_available():
+        _SEATBELT_APPLIES = False
+        return False
+    try:
+        import subprocess
+
+        profile = write_seatbelt_profile()
+        exe = _which("sandbox-exec") or "/usr/bin/sandbox-exec"
+        r = subprocess.run(
+            [exe, "-f", str(profile), "/bin/echo", "cosmic-seatbelt-ok"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        ok = (
+            r.returncode == 0
+            and "cosmic-seatbelt-ok" in (r.stdout or "")
+            and "Operation not permitted" not in out
+            and "sandbox_apply" not in out
+        )
+        _SEATBELT_APPLIES = bool(ok)
+    except Exception:
+        _SEATBELT_APPLIES = False
+    return _SEATBELT_APPLIES
+
+
+def is_sandbox_apply_failure(stderr: str = "", stdout: str = "") -> bool:
+    """True when a run failed because seatbelt could not apply (nested sandbox)."""
+    blob = f"{stderr or ''}\n{stdout or ''}"
+    return "sandbox_apply" in blob or (
+        "sandbox-exec" in blob and "Operation not permitted" in blob
+    )
+
+
+def wrap_argv_for_l0_shell(
+    cmd: str, *, shell: str = "/bin/zsh", force_bare: bool = False
+) -> List[str]:
+    """Return argv to run *cmd* under the L0 floor when available and usable.
+
+    On macOS when seatbelt applies: sandbox-exec -f profile shell -c cmd
+    Elsewhere / nested-sandbox hosts: bare shell -c cmd (classification DiD
+    still gates; floor is best-effort).
+    """
+    shell_bin = shell if Path(shell).is_file() else (_which("zsh") or _which("bash") or "/bin/sh")
+    if (
+        not force_bare
+        and platform.system() == "Darwin"
+        and sandbox_available()
+        and seatbelt_applies()
+    ):
         profile = write_seatbelt_profile()
         exe = _which("sandbox-exec") or "/usr/bin/sandbox-exec"
         return [exe, "-f", str(profile), shell_bin, "-c", cmd]
@@ -124,5 +194,10 @@ def wrap_argv_for_l0_shell(cmd: str, *, shell: str = "/bin/zsh") -> List[str]:
 
 def describe_floor() -> str:
     paths = ", ".join(str(p) for p in load_deny_paths())
-    backend = "sandbox-exec/Seatbelt" if sandbox_available() else "none (classification+TTY only)"
+    if sandbox_available() and seatbelt_applies():
+        backend = "sandbox-exec/Seatbelt"
+    elif sandbox_available():
+        backend = "seatbelt-binary-present-but-unusable (nested/denied; bare shell + DiD)"
+    else:
+        backend = "none (classification+TTY only)"
     return f"L0 sandbox floor backend={backend}; deny=[{paths}]"

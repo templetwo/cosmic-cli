@@ -79,8 +79,31 @@ STEP_PREFIXES = (
     "PASS:",
 )
 
-DISCOVERY_PREFIXES = ("GLOB:", "GREP:", "LIST:", "SHELL:")
+# Path-probe verbs only. Productive SHELL (date, tests, version, builds) must
+# NOT burn discovery streak — pilot finding 2026-07-23: `date` after one shell
+# was steered into CREATE-only dead end.
+DISCOVERY_PREFIXES = ("GLOB:", "GREP:", "LIST:")
 MUTATION_PREFIXES = ("MKDIR:", "CREATE:", "EDIT:", "WRITE:")
+
+# SHELL counted as discovery only when it looks like filesystem probing.
+_SHELL_PROBE_RE = re.compile(
+    r"^\s*(ls|find|locate|tree|fd|du|df|pwd|which|type|whereis|stat|file|"
+    r"head|tail|cat|less|more|dir|rg|grep|ag|ack)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_discovery_step(upper: str, next_step: str) -> bool:
+    """True when this step is path-probing thrash, not productive work."""
+    if any(upper.startswith(p) for p in DISCOVERY_PREFIXES):
+        return True
+    if upper.startswith("SHELL:"):
+        cmd = next_step.split(":", 1)[1].strip() if ":" in next_step else ""
+        # strip simple env prefixes: FOO=bar cmd
+        while " " in cmd and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\S+\s+", cmd):
+            cmd = cmd.split(None, 1)[1]
+        return bool(_SHELL_PROBE_RE.match(cmd))
+    return False
 
 
 class StargazerAgent:
@@ -564,9 +587,14 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 and path not in self.files_seen
                 and self.exec_mode == "safe"
             ):
+                self._add_to_memory(
+                    f"STEERING: before WRITE {path}, issue READ: {path} "
+                    "then retry WRITE with full contents.",
+                    label="steer",
+                )
                 return (
                     f"[Error] overwriting {path} requires prior READ in safe mode "
-                    "(or use --mode full)."
+                    "(or use --mode full). Next step: READ: {path}"
                 )
             self._log(f"WRITE {path}")
 
@@ -838,14 +866,17 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 }
             )
 
-                # Discovery thrash counter
-                if any(upper.startswith(p) for p in DISCOVERY_PREFIXES):
-                    # SHELL that mutates (mkdir) counts as discovery-ish still for thrash
+                # Discovery thrash counter — probe-like only (not productive SHELL).
+                if _is_discovery_step(upper, next_step):
                     self._discovery_streak += 1
                 elif any(upper.startswith(p) for p in MUTATION_PREFIXES):
                     self._discovery_streak = 0
+                elif upper.startswith("SHELL:") and not _is_discovery_step(upper, next_step):
+                    # Productive shell (tests, date, version) is progress, not thrash.
+                    self._discovery_streak = 0
                 if self._discovery_streak >= 2 and not any(
-                    upper.startswith(p) for p in MUTATION_PREFIXES + ("FINISH:", "PASS:", "READ:")
+                    upper.startswith(p)
+                    for p in MUTATION_PREFIXES + ("FINISH:", "PASS:", "READ:", "SHELL:")
                 ):
                     wants_new = any(
                         w in self.directive.lower()
@@ -1413,8 +1444,13 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             env.setdefault("GLOG_minloglevel", "2")
             # Privilege ranking floor: L0 shell must not reach ~/.cosmic-cli
             # (token store). --mode full skips (L2/L3 blast-radius opt-in).
+            # When seatbelt cannot apply (nested sandbox), fall back to bare
+            # shell — classification DiD still ran above.
             if self.exec_mode != "full":
-                from cosmic_cli.sandbox import wrap_argv_for_l0_shell
+                from cosmic_cli.sandbox import (
+                    is_sandbox_apply_failure,
+                    wrap_argv_for_l0_shell,
+                )
 
                 argv = wrap_argv_for_l0_shell(cmd)
                 result = subprocess.run(
@@ -1426,6 +1462,24 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     cwd=str(self.root),
                     env=env,
                 )
+                if is_sandbox_apply_failure(result.stderr or "", result.stdout or ""):
+                    # Probe said usable or binary present but apply failed live.
+                    from cosmic_cli.sandbox import mark_seatbelt_unusable
+
+                    mark_seatbelt_unusable()
+                    bare = wrap_argv_for_l0_shell(cmd, force_bare=True)
+                    result = subprocess.run(
+                        bare,
+                        shell=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        cwd=str(self.root),
+                        env=env,
+                    )
+                    self.warnings.append(
+                        "seatbelt unusable here; SHELL fell back to bare + DiD"
+                    )
             else:
                 result = subprocess.run(
                     cmd,

@@ -100,6 +100,46 @@ def test_inert_tool_allows(ws, capsys, monkeypatch):
     assert out.strip() == SENTINEL
 
 
+def test_orchestration_tools_are_inert(ws, capsys, monkeypatch):
+    """Grok Build meta-tools must not pay deny-by-default (friction fix)."""
+    for name, inp in [
+        ("todo_write", {"todos": [{"id": "1", "content": "x", "status": "pending"}]}),
+        ("search_tool", {"query": "github pull"}),
+        ("spawn_subagent", {"prompt": "explore", "description": "x"}),
+        ("update_goal", {"message": "working"}),
+        ("ask_user_question", {"questions": []}),
+    ]:
+        code, out, err = _run(_env(name, **inp), capsys, monkeypatch, ws)
+        assert out.strip() == SENTINEL, f"{name} should OPEN, err={err!r}"
+
+
+def test_use_tool_is_gated_not_hard_denied(ws, capsys, monkeypatch):
+    """use_tool is the MCP bridge; policy-clean calls OPEN (still rule-scanned)."""
+    code, out, err = _run(
+        _env("use_tool", tool_name="linear__list_issues", tool_input={"limit": 1}),
+        capsys, monkeypatch, ws,
+    )
+    assert out.strip() == SENTINEL, f"use_tool should OPEN when no rule matches: {err!r}"
+
+
+def test_python_c_visible_payload_allows(ws, capsys, monkeypatch):
+    """Visible python3 -c is scannable DiD; ordinary engineering must OPEN."""
+    code, out, err = _run(
+        _env("run_terminal_command", command="python3 -c 'print(1)'"),
+        capsys, monkeypatch, ws,
+    )
+    assert out.strip() == SENTINEL, f"visible python3 -c should OPEN: {err!r}"
+
+
+def test_python_c_nested_os_system_denies(ws, capsys, monkeypatch):
+    code, out, err = _run(
+        _env("run_terminal_command", command='python3 -c "import os; os.system(\'ls\')"'),
+        capsys, monkeypatch, ws,
+    )
+    assert out == ""
+    assert "opaque" in err.lower() or "privilege ranking" in err.lower()
+
+
 def test_read_allowed_when_no_rule(ws, capsys, monkeypatch):
     code, out, err = _run(_env("read_file", path="README.md"), capsys, monkeypatch, ws)
     assert out.strip() == SENTINEL

@@ -6,7 +6,7 @@ Not another agent TUI. Cosmic is the mission protocol a cockpit calls:
 tool-shaped actions, T2Helix memory, compass-gated execution, a kernel-backed
 governance floor, and an independent review seat.
 
-**Default model:** `grok-4.5` · **v0.9.4** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
+**Default model:** `grok-4.5` · **v0.9.5** · substrate: [T2Helix](https://github.com/templetwo/t2helix)
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21461197.svg)](https://doi.org/10.5281/zenodo.21461197) · Apache-2.0 · [COSMIC-ALLOW RFC v1.1](docs/COSMIC-ALLOW-RFC-v1.1.md)
 
@@ -191,17 +191,30 @@ Gate order (SHELL/CODE): **local policy (validate)** → **check_shell** →
 Mutations (EDIT/WRITE/CREATE/MKDIR): **gateway authorize + execute_with_receipt**
 (checkpoint when available).
 
-## Grok Build bridge
+## Where the gate runs (important)
 
-Mount the fail-closed gate under Grok Build's (or Claude Code's) fail-open
-PreToolUse hooks. Deny is the ground state.
+**Default product surface is Stargazer** (`cosmic-cli do` / `stargazer` /
+`chat`). Compass + shell blocklist run **in-process** there
+(`agents._compass_gate`). You do **not** need a Grok Build PreToolUse hook for
+missions to be gated.
+
+## Grok Build bridge (optional, opt-in)
+
+Mount the fail-closed COSMIC-ALLOW gate under Grok Build's fail-open PreToolUse
+hooks. This is a **deliberate bridge experiment**, not the default engineering
+seat. Global PreToolUse taxes every tool call in every Grok Build session; leave
+it off unless you are testing the cockpit seam.
 
 ```bash
-cosmic-cli init --grok --force     # installs the hook, wrapper, launcher,
-                                   # and provisions the kernel floor by default
+cosmic-cli init --grok --force     # OPTIONAL: global hook + wrapper + launcher
+                                   # + kernel floor profile
 cosmic-cli gate --boot-canary      # per-class canary; refuses launch if the gate is dead
 cosmic-cli gate --floor-canary     # proves the sandbox floor binds; refuses if it does not
 ~/.cosmic-cli/hooks/cosmic-launch-grok.sh
+
+# To unmount the global hook later:
+#   mv ~/.grok/hooks/cosmic-pretooluse.json \
+#      ~/.grok/hooks/cosmic-pretooluse.json.disabled
 ```
 
 **Proof-of-allow (COSMIC-ALLOW RFC v1.1).** The gate authorizes an action only
@@ -414,7 +427,7 @@ pytest tests/battery/ -q           # red-team battery + ASR table
 
 > Vasquez, A. J., Sr. (2026). *Fail-Closed Governance for Fail-Open Harnesses: A
 > Cross-Vendor Proof-of-Allow Protocol for Coding Agents (COSMIC-ALLOW RFC v1.1)*
-> (v0.9.4). The Temple of Two. Zenodo. https://doi.org/10.5281/zenodo.21461197
+> (v0.9.5). The Temple of Two. Zenodo. https://doi.org/10.5281/zenodo.21461197
 
 Concept DOI (all versions): `10.5281/zenodo.21461196` · see [`CITATION.cff`](CITATION.cff).
 

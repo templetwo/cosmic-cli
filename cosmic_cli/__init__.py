@@ -22,7 +22,7 @@ from .self_correction import BoundedSelfCorrection, CorrectionContext, Correctio
 # The single source of truth for the version. pyproject.toml reads this
 # attribute; CITATION.cff and .zenodo.json must be bumped to match it, and
 # tests/test_build_identity.py fails the build if they drift.
-__version__ = "0.9.4"
+__version__ = "0.9.5"
 __author__ = "Anthony Vasquez Sr. / Temple of Two"
 __description__ = (
     "Temple runtime avionics: Grok Stargazer, T2Helix memory, "

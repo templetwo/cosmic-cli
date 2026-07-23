@@ -287,7 +287,7 @@ def test_deeply_nested_json_does_not_forge_or_crash(gate, nonce):
         "server__tool",
         "SomeFutureTool",
         "apply_patch",
-        "NotebookEdit",
+        # NotebookEdit is a known mutate tool (v0.9.5 classifier); not unknown.
         "notebook_edit",
         "bash",
         "BASH",

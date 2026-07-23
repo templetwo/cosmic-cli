@@ -114,6 +114,9 @@ def test_opaque_shell_wrappers_fail_closed():
     assert is_opaque_shell_wrapper('python3 -c "os.system(x)"')
     assert is_opaque_shell_wrapper("eval \"$cmd\"")
     assert is_opaque_shell_wrapper("deploy prod") is None
+    # Visible interpreter payloads are NOT opaque — DiD scans the full string.
+    assert is_opaque_shell_wrapper("python3 -c 'print(1)'") is None
+    assert is_opaque_shell_wrapper("bash -c 'ls -la'") is None
 
 
 def test_check_shell_witnesses_approval_surface():
@@ -290,12 +293,70 @@ def test_sandbox_toml_declares_cosmic_cli_deny():
 
 
 def test_wrap_argv_uses_seatbelt_on_macos():
+    from cosmic_cli.sandbox import reset_seatbelt_probe, seatbelt_applies
+
+    reset_seatbelt_probe()
     argv = wrap_argv_for_l0_shell("echo hi")
-    if platform.system() == "Darwin" and sandbox_available():
+    if platform.system() == "Darwin" and sandbox_available() and seatbelt_applies():
         assert argv[0].endswith("sandbox-exec") or "sandbox-exec" in argv[0]
         assert "-f" in argv
     else:
+        # Nested sandbox hosts: binary may exist but apply fails → bare shell.
         assert "-c" in argv
+        assert "sandbox-exec" not in argv[0]
+
+
+def test_is_sandbox_apply_failure_detects_nested_deny():
+    from cosmic_cli.sandbox import is_sandbox_apply_failure
+
+    assert is_sandbox_apply_failure(
+        "sandbox-exec: sandbox_apply: Operation not permitted"
+    )
+    assert not is_sandbox_apply_failure("command not found")
+
+
+def test_shell_falls_back_when_seatbelt_apply_fails(monkeypatch):
+    """Live nested-sandbox shape: first argv seatbelt fails, bare succeeds."""
+    from unittest.mock import Mock
+
+    from cosmic_cli.agents import StargazerAgent
+    from cosmic_cli.sandbox import reset_seatbelt_probe
+
+    reset_seatbelt_probe()
+    agent = StargazerAgent(
+        "t", api_key="test_key", quiet=True, use_helix=False, exec_mode="safe"
+    )
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv) if isinstance(argv, (list, tuple)) else argv)
+        # First call: seatbelt-shaped argv fails apply
+        if isinstance(argv, (list, tuple)) and any(
+            "sandbox-exec" in str(a) for a in argv
+        ):
+            return Mock(
+                stdout="",
+                stderr="sandbox-exec: sandbox_apply: Operation not permitted\n",
+                returncode=1,
+            )
+        return Mock(stdout="hi\n", stderr="", returncode=0)
+
+    # Force first wrap to look like seatbelt even if probe would say bare
+    def fake_wrap(cmd, force_bare=False, **kw):
+        if force_bare:
+            return ["/bin/zsh", "-c", cmd]
+        return ["/usr/bin/sandbox-exec", "-f", "/tmp/x.sb", "/bin/zsh", "-c", cmd]
+
+    import cosmic_cli.sandbox as sb
+
+    monkeypatch.setattr(sb, "wrap_argv_for_l0_shell", fake_wrap)
+    monkeypatch.setattr("cosmic_cli.agents.subprocess.run", fake_run)
+
+    out = agent._run_shell("echo hi")
+    assert "hi" in out
+    assert any("sandbox-exec" in str(c) for c in calls)
+    assert any(isinstance(c, list) and "zsh" in str(c[0]) for c in calls)
+    assert any("seatbelt unusable" in w for w in agent.warnings)
 
 
 @pytest.mark.skipif(
@@ -305,6 +366,15 @@ def test_wrap_argv_uses_seatbelt_on_macos():
 def test_seatbelt_blocks_read_of_token_store(tmp_path, monkeypatch):
     """Live kernel floor: sandboxed process cannot read ~/.cosmic-cli."""
     import subprocess
+
+    from cosmic_cli.sandbox import reset_seatbelt_probe, seatbelt_applies
+
+    reset_seatbelt_probe()
+    if not seatbelt_applies(force_probe=True):
+        pytest.skip(
+            "seatbelt binary present but cannot apply here "
+            "(nested sandbox / host policy) — bare-shell fallback is intentional"
+        )
 
     home = tmp_path / "home"
     store = home / ".cosmic-cli"
@@ -316,6 +386,7 @@ def test_seatbelt_blocks_read_of_token_store(tmp_path, monkeypatch):
     # Re-resolve deny paths under new HOME
     from cosmic_cli import sandbox as sb
 
+    sb.reset_seatbelt_probe()
     argv = sb.wrap_argv_for_l0_shell(f"cat {secret}")
     r = subprocess.run(argv, capture_output=True, text=True)
     # Seatbelt should deny; exit non-zero and/or no secret in stdout

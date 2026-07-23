@@ -1278,13 +1278,22 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
 @click.option(
     "--grok",
     is_flag=True,
-    help="Install global Grok Build PreToolUse wrapper + boot canary assets (box 2).",
+    help=(
+        "OPTIONAL bridge: install a global Grok Build PreToolUse COSMIC-ALLOW "
+        "wrapper + boot canary. Default product surface is Stargazer-only "
+        "(cosmic-cli do); do not enable this for ordinary Grok Build engineering seats."
+    ),
 )
 def init_cmd(directory: str, force: bool, name: str, grok: bool) -> None:
     """Drop COSMIC.md agent notes into a project (no stack).
 
-    With ``--grok``: install the always-trusted global PreToolUse hook that
-    calls ``cosmic-cli gate --hook grok`` under the positive COSMIC-ALLOW protocol.
+    Default: project notes only. Compass/gate for missions live inside
+    Stargazer (``cosmic-cli do``), not in the host cockpit.
+
+    With ``--grok`` (opt-in bridge, not the default): install a global Grok Build
+    PreToolUse hook that calls ``cosmic-cli gate --hook grok`` under COSMIC-ALLOW.
+    That path taxes every Grok Build tool call and is for deliberate bridge
+    experiments — not day-to-day engineering seats.
     """
     msg, ok = write_init(Path(directory), force=force, name=name)
     console.print(f"[{'green' if ok else 'red'}]{msg}[/]")
@@ -1293,6 +1302,11 @@ def init_cmd(directory: str, force: bool, name: str, grok: bool) -> None:
     if grok:
         from cosmic_cli.install_grok_hooks import install_grok_hooks
 
+        console.print(
+            "[yellow]note:[/] --grok mounts a GLOBAL PreToolUse gate on Grok Build. "
+            "Stargazer already gates SHELL/CODE in-process. "
+            "Prefer no --grok unless you are deliberately bridging the cockpit."
+        )
         imsg, iok = install_grok_hooks(force=force)
         console.print(f"[{'green' if iok else 'red'}]{imsg}[/]")
         if not iok:

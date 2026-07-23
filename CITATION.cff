@@ -14,12 +14,12 @@ authors:
     name-suffix: Sr.
     affiliation: "The Temple of Two"
     orcid: "https://orcid.org/0009-0000-6440-1506"
-version: "0.9.4"
+version: "0.9.5"
 doi: "10.5281/zenodo.21461197"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.21461197"
-    description: "Version DOI (v0.9.4)"
+    description: "Version DOI (v0.9.5)"
   - type: doi
     value: "10.5281/zenodo.21461196"
     description: "Concept DOI (all versions)"

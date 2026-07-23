@@ -134,6 +134,56 @@ class TestStargazerAgent:
         assert result["status"] == "complete"
         assert result["results"][-1]["step"] == "FINISH"
 
+    def test_productive_shell_does_not_trigger_discovery_steer(self, tmp_path, monkeypatch):
+        """date/version after READ must run; not be steered as discovery thrash."""
+        from cosmic_cli.agents import _is_discovery_step
+
+        assert _is_discovery_step("SHELL: LS -LA", "SHELL: ls -la")
+        assert _is_discovery_step("SHELL: FIND .", "SHELL: find . -name x")
+        assert not _is_discovery_step(
+            "SHELL: DATE -U", "SHELL: date -u +%Y-%m-%dT%H:%M:%SZ"
+        )
+        assert not _is_discovery_step(
+            "SHELL: COSMIC-CLI --VERSION", "SHELL: cosmic-cli --version"
+        )
+
+        echo = tmp_path / "echo.jsonl"
+        monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", echo)
+        agent = StargazerAgent(
+            "write a file after checking version",
+            api_key="test_key",
+            write_echo=True,
+            max_steps=6,
+            show_progress=False,
+            quiet=True,
+            work_dir=str(tmp_path),
+            auto_verify=False,
+            use_helix=False,
+        )
+        shell_calls: list[str] = []
+
+        def fake_shell(cmd: str) -> str:
+            shell_calls.append(cmd)
+            return f"[exit 0]\n{cmd}"
+
+        with patch.object(
+            agent,
+            "_ask_grok_for_next_step",
+            side_effect=[
+                "READ: f.py",
+                "SHELL: cosmic-cli --version",
+                "SHELL: date -u +%Y-%m-%dT%H:%M:%SZ",
+                "CREATE: out.txt|||ok\n",
+                "FINISH: done",
+            ],
+        ), patch.object(
+            agent.context_manager, "read_file", return_value="x\n"
+        ), patch.object(agent, "_run_shell", side_effect=fake_shell):
+            result = agent.execute()
+        assert "cosmic-cli --version" in shell_calls
+        assert any("date" in c for c in shell_calls), f"date never ran: {shell_calls}"
+        assert result["status"] == "complete"
+
     def test_mutation_directive_steers_instead_of_false_finish(self, tmp_path, monkeypatch):
         echo = tmp_path / "echo.jsonl"
         monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", echo)
@@ -164,7 +214,11 @@ class TestStargazerAgent:
         assert "f.py" in result.get("edited", [])
 
     @patch("subprocess.run")
-    def test_shell_command_execution_safe_mode(self, mock_subprocess):
+    def test_shell_command_execution_safe_mode(self, mock_subprocess, monkeypatch):
+        # Avoid live seatbelt probe (extra subprocess.run) polluting the mock.
+        monkeypatch.setattr(
+            "cosmic_cli.sandbox.seatbelt_applies", lambda force_probe=False: False
+        )
         agent = StargazerAgent(
             "test directive", api_key="test_key", quiet=True, use_helix=False
         )

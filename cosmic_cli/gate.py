@@ -39,14 +39,40 @@ _NONCE_RE = re.compile(r"[0-9a-f]{32,}")  # used with fullmatch: no trailing new
 
 # Tool-name classification. Claude names and their Grok aliases both map here
 # (a matcher keeps its original name too), so one table covers both cockpits.
+#
+# Design (v0.9.5 friction fix): classify by *capability*, not by how many
+# names a cockpit invented. Orchestration / meta tools that do not touch the
+# local FS or approval store are INERT (OPEN). Read/mutate/shell stay gated.
+# Unrecognized names and MCP `server__tool` stay deny-by-default (RFC 5.3).
 _SHELL = {"Bash", "run_terminal_command"}
-_MUTATE = {"Write", "Edit", "MultiEdit", "Create", "search_replace", "write", "create"}
-_READ = {"Read", "read_file", "Grep", "grep", "Glob", "ListDir", "list_dir"}
-# Genuinely inert: no local filesystem read, so no sensitive-path exposure.
+_MUTATE = {
+    "Write", "Edit", "MultiEdit", "Create",
+    "search_replace", "write", "create",
+    # Grok Build edit surface
+    "StrReplace", "NotebookEdit",
+}
+_READ = {
+    "Read", "read_file", "Grep", "grep", "Glob", "ListDir", "list_dir",
+    # Grok Build read surface
+    "glob", "list_dir", "get_command_or_subagent_output",
+}
+# Genuinely inert: no local filesystem read of operator-controlled paths, so no
+# sensitive-path exposure. Orchestration + remote API tools live here.
 # NB: read-capable tools (Grep/Glob/ListDir) are NOT here — they READ file
 # content/paths, so they route through _READ and the sensitive-path refusal.
-# The allowlist used to enumerate NAMES; the property that matters is READS.
-_INERT = {"WebSearch", "web_search"}
+_INERT = {
+    # web / remote
+    "WebSearch", "web_search", "WebFetch", "web_fetch",
+    "x_user_search", "x_semantic_search", "x_keyword_search", "x_thread_fetch",
+    "image_gen", "image_edit", "image_to_video", "reference_to_video",
+    # cockpit orchestration (no local FS door into secrets)
+    "todo_write", "update_goal", "ask_user_question",
+    "enter_plan_mode", "exit_plan_mode",
+    "spawn_subagent", "kill_command_or_subagent", "monitor",
+    "scheduler_create", "scheduler_delete", "scheduler_list",
+    # MCP discovery only — does not invoke a server tool
+    "search_tool",
+}
 
 
 def _reason(msg: str) -> None:
@@ -93,18 +119,39 @@ def classify(tool_name: str, tool_input: dict) -> Tuple[str, ActionType | None, 
         return ("gate", ActionType.SHELL, _extract(tool_input, "command", "cmd", "script"))
     if tool_name in _MUTATE:
         path = _extract(
-            tool_input, "path", "file_path", "filePath", "target_file"
+            tool_input, "path", "file_path", "filePath", "target_file", "file_path"
         )
-        body = _extract(tool_input, "content", "new_string", "new_str", "text")
+        body = _extract(
+            tool_input, "content", "new_string", "new_str", "text", "old_string"
+        )
         return ("gate", ActionType.WRITE, f"{path}\n{body}")
     if tool_name in _READ:
         return (
             "gate",
             ActionType.READ,
             _extract(
-                tool_input, "path", "file_path", "filePath", "target_file"
+                tool_input, "path", "file_path", "filePath", "target_file",
+                "output_file", "command",  # task-output readers
             ),
         )
+    # use_tool: MCP invocation bridge. Gate as NETWORK corpus (tool name + args)
+    # so COSMIC.md rules can still PAUSE/WITNESS; default with no rule is OPEN.
+    # External server__tool names still deny when called as the tool_name itself.
+    if tool_name == "use_tool":
+        target = _extract(tool_input, "tool_name", "name", "tool")
+        # Qualified MCP names remain deny-by-default when the *outer* tool is
+        # the server__tool form; when nested under use_tool we still scan.
+        args_preview = ""
+        try:
+            raw_args = tool_input.get("tool_input") or tool_input.get("arguments") or {}
+            if isinstance(raw_args, dict):
+                args_preview = json.dumps(raw_args, sort_keys=True)[:500]
+            elif isinstance(raw_args, str):
+                args_preview = raw_args[:500]
+        except Exception:
+            args_preview = ""
+        return ("gate", ActionType.NETWORK, f"{target}\n{args_preview}")
+
     # MCP qualified name (server__tool) or anything unknown: deny-by-default.
     return ("deny", None, "")
 

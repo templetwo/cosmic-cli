@@ -43,9 +43,62 @@ APPROVAL_SURFACE_SUBSTR = (
     '.cosmic-cli"',
 )
 
-# Opaque / decoder wrappers that hide the real command from substring DiD.
-# Fail-closed in safe+interactive: L0 must not run uninspectable payloads.
-# --mode full skips (L2/L3 blast-radius opt-in).
+# True opacity: decoder pipelines and eval-of-variable forms where the gate
+# cannot see the real action as plain text in the envelope. Fail-closed in
+# safe+interactive; --mode full skips (L2/L3 blast-radius opt-in).
+#
+# Interpreter -c/-e with a *visible* payload is NOT treated as opaque by
+# default (v0.9.5): the full command string is in the envelope, so substring
+# DiD + check_shell still apply. Nested danger inside -c (os.system, base64
+# decode, subprocess, eval, approval-surface tokens) re-arms the block via
+# _NESTED_OPAQUE_IN_INTERPRETER.
+_TRUE_OPAQUE = re.compile(
+    r"("
+    r"base64\s+(-[dD]|--decode)|"
+    r"\|\s*(sh|bash|zsh|dash)\b|"
+    r"\beval\b|"
+    r"openssl\s+enc\s+-d|"
+    r"xxd\s+-r|"
+    r"/dev/stdin|"
+    r"process\.popen|"
+    r"commands\.getoutput"
+    r")",
+    re.IGNORECASE,
+)
+
+# Visible interpreter entrypoints (payload is still in the envelope).
+_INTERPRETER_C = re.compile(
+    r"("
+    r"\b(sh|bash|zsh|dash)\s+-c\b|"
+    r"python3?\s+-c\b|"
+    r"perl\s+-e\b|"
+    r"ruby\s+-e\b|"
+    r"node\s+(-e|--eval)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Inside a -c/-e payload these make the action effectively opaque or a
+# self-approval door; keep fail-closed when combined with an interpreter entry.
+_NESTED_OPAQUE_IN_INTERPRETER = re.compile(
+    r"("
+    r"os\.system\s*\(|"
+    r"subprocess\.(run|call|popen|check_output|check_call)|"
+    r"base64\s*\.|b64decode|b64encode|"
+    r"\beval\s*\(|"
+    r"\bexec\s*\(|"
+    r"__import__\s*\(|"
+    r"commands\.getoutput|"
+    r"process\.popen|"
+    r"accept-pause|show-pause-token|last_pause_token|"
+    r"local_approvals|COSMIC_APPROVAL_TOKEN|\.cosmic-cli/"
+    r")",
+    re.IGNORECASE,
+)
+
+# Deprecated name kept for importers; prefer is_opaque_shell_wrapper().
+# Matches the old broad surface so code that still searches this regex does
+# not silently go green on previously-blocked forms.
 _OPAQUE_SHELL = re.compile(
     r"("
     r"base64\s+(-[dD]|--decode)|"
@@ -142,14 +195,27 @@ def classification_corpus(command: str) -> str:
 
 
 def is_opaque_shell_wrapper(command: str) -> Optional[str]:
-    """Fail-closed on decoder/interpreter wrappers that hide the real action."""
+    """Fail-closed on wrappers that hide the real action from DiD.
+
+    True decoder pipelines (base64|sh, eval, openssl -d, …) always deny.
+    Interpreter -c/-e with a fully visible payload is allowed so ordinary
+    engineering (``python3 -c 'print(1)'``, ``bash -c 'ls'``) works; nested
+    opacity / approval-surface reach inside the payload re-arms the deny.
+    """
     if not command:
         return None
-    if _OPAQUE_SHELL.search(command):
+    if _TRUE_OPAQUE.search(command):
         return (
             "[BLOCKED] privilege ranking: opaque shell wrapper "
-            "(base64|sh / interpreter -c / eval). "
+            "(base64|sh / eval / decoder pipeline). "
             "Classification cannot see through these; L0 must not use them. "
+            "Use --mode full only as an L2/L3 blast-radius opt-in."
+        )
+    if _INTERPRETER_C.search(command) and _NESTED_OPAQUE_IN_INTERPRETER.search(command):
+        return (
+            "[BLOCKED] privilege ranking: opaque shell wrapper "
+            "(interpreter -c/-e with nested decode/exec/approval-surface). "
+            "L0 must not hide actions inside interpreter payloads. "
             "Use --mode full only as an L2/L3 blast-radius opt-in."
         )
     return None
