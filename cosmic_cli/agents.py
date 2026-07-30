@@ -1444,15 +1444,25 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             env.setdefault("GLOG_minloglevel", "2")
             # Privilege ranking floor: L0 shell must not reach ~/.cosmic-cli
             # (token store). --mode full skips (L2/L3 blast-radius opt-in).
-            # When seatbelt cannot apply (nested sandbox), fall back to bare
-            # shell — classification DiD still ran above.
+            # When seatbelt cannot apply (nested sandbox), FAIL CLOSED — do not
+            # bare-shell execute. DiD is known-evadable alone; live fallback was
+            # a widened allow (f444b83 review AMEND, Claude 2026-07-30).
             if self.exec_mode != "full":
                 from cosmic_cli.sandbox import (
+                    FloorUnavailableError,
                     is_sandbox_apply_failure,
+                    mark_seatbelt_unusable,
                     wrap_argv_for_l0_shell,
                 )
 
-                argv = wrap_argv_for_l0_shell(cmd)
+                try:
+                    argv = wrap_argv_for_l0_shell(cmd)
+                except FloorUnavailableError as exc:
+                    msg = f"[BLOCKED] L0 sandbox floor unavailable: {exc}"
+                    self.warnings.append(str(exc))
+                    self._add_to_memory(f"SHELL `{cmd}`:\n{msg}", label="shell")
+                    return msg
+
                 result = subprocess.run(
                     argv,
                     shell=False,
@@ -1463,23 +1473,18 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     env=env,
                 )
                 if is_sandbox_apply_failure(result.stderr or "", result.stdout or ""):
-                    # Probe said usable or binary present but apply failed live.
-                    from cosmic_cli.sandbox import mark_seatbelt_unusable
-
+                    # Probe said usable but apply failed live — sticky unusable,
+                    # fail closed (no bare re-run).
                     mark_seatbelt_unusable()
-                    bare = wrap_argv_for_l0_shell(cmd, force_bare=True)
-                    result = subprocess.run(
-                        bare,
-                        shell=False,
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        cwd=str(self.root),
-                        env=env,
+                    msg = (
+                        "[BLOCKED] L0 sandbox floor: seatbelt apply failed "
+                        "(nested sandbox / host policy). No bare-shell fallback."
                     )
                     self.warnings.append(
-                        "seatbelt unusable here; SHELL fell back to bare + DiD"
+                        "seatbelt unusable here; SHELL denied (fail-closed)"
                     )
+                    self._add_to_memory(f"SHELL `{cmd}`:\n{msg}", label="shell")
+                    return msg
             else:
                 result = subprocess.run(
                     cmd,

@@ -170,25 +170,43 @@ def is_sandbox_apply_failure(stderr: str = "", stdout: str = "") -> bool:
     )
 
 
+class FloorUnavailableError(RuntimeError):
+    """macOS has sandbox-exec but the kernel floor cannot apply here.
+
+    Raised instead of falling back to bare shell. Classification DiD is
+    known-evadable alone; a live-execute fallback that relies only on DiD is a
+    widened allow (Claude review of f444b83, 2026-07-30). Fail closed.
+    """
+
+
 def wrap_argv_for_l0_shell(
     cmd: str, *, shell: str = "/bin/zsh", force_bare: bool = False
 ) -> List[str]:
     """Return argv to run *cmd* under the L0 floor when available and usable.
 
-    On macOS when seatbelt applies: sandbox-exec -f profile shell -c cmd
-    Elsewhere / nested-sandbox hosts: bare shell -c cmd (classification DiD
-    still gates; floor is best-effort).
+    On macOS when seatbelt applies: sandbox-exec -f profile shell -c cmd.
+    On macOS when the binary exists but the floor cannot apply (nested sandbox,
+    host policy): raise FloorUnavailableError — never bare-shell execute.
+    Elsewhere (no seatbelt binary): bare shell -c cmd (classification+TTY only;
+    same as pre-floor platforms).
+
+    *force_bare* is retained for tests that assert the deny path; production
+    agents must not use it to re-run after an apply failure.
     """
     shell_bin = shell if Path(shell).is_file() else (_which("zsh") or _which("bash") or "/bin/sh")
-    if (
-        not force_bare
-        and platform.system() == "Darwin"
-        and sandbox_available()
-        and seatbelt_applies()
-    ):
-        profile = write_seatbelt_profile()
-        exe = _which("sandbox-exec") or "/usr/bin/sandbox-exec"
-        return [exe, "-f", str(profile), shell_bin, "-c", cmd]
+    if force_bare:
+        return [shell_bin, "-c", cmd]
+    if platform.system() == "Darwin" and sandbox_available():
+        if seatbelt_applies():
+            profile = write_seatbelt_profile()
+            exe = _which("sandbox-exec") or "/usr/bin/sandbox-exec"
+            return [exe, "-f", str(profile), shell_bin, "-c", cmd]
+        raise FloorUnavailableError(
+            "seatbelt binary present but kernel floor cannot apply here "
+            "(nested sandbox / host policy). L0 shell denied — no bare-shell "
+            "fallback (DiD is known-evadable alone). Use a host where seatbelt "
+            "applies, or --mode full as an L2/L3 blast-radius opt-in."
+        )
     return [shell_bin, "-c", cmd]
 
 
@@ -197,7 +215,10 @@ def describe_floor() -> str:
     if sandbox_available() and seatbelt_applies():
         backend = "sandbox-exec/Seatbelt"
     elif sandbox_available():
-        backend = "seatbelt-binary-present-but-unusable (nested/denied; bare shell + DiD)"
+        backend = (
+            "seatbelt-binary-present-but-unusable "
+            "(nested/denied; L0 shell FAIL-CLOSED — no bare fallback)"
+        )
     else:
         backend = "none (classification+TTY only)"
     return f"L0 sandbox floor backend={backend}; deny=[{paths}]"

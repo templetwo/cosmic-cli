@@ -215,9 +215,16 @@ class TestStargazerAgent:
 
     @patch("subprocess.run")
     def test_shell_command_execution_safe_mode(self, mock_subprocess, monkeypatch):
-        # Avoid live seatbelt probe (extra subprocess.run) polluting the mock.
+        # Floor usable so wrap returns argv; avoid live probe polluting the mock.
         monkeypatch.setattr(
-            "cosmic_cli.sandbox.seatbelt_applies", lambda force_probe=False: False
+            "cosmic_cli.sandbox.seatbelt_applies", lambda force_probe=False: True
+        )
+        monkeypatch.setattr(
+            "cosmic_cli.sandbox.sandbox_available", lambda: True
+        )
+        monkeypatch.setattr(
+            "cosmic_cli.sandbox.wrap_argv_for_l0_shell",
+            lambda cmd, force_bare=False, **kw: ["/bin/zsh", "-c", cmd],
         )
         agent = StargazerAgent(
             "test directive", api_key="test_key", quiet=True, use_helix=False
@@ -279,17 +286,21 @@ class TestStargazerAgent:
             agent._execute_step("INFO: system status")
             mock_info.assert_called_once_with("system status")
 
-    def test_safety_block_in_run_shell(self):
+    def test_safety_block_in_run_shell(self, monkeypatch):
         agent = StargazerAgent(
             "test directive", api_key="test_key", quiet=True, use_helix=False
         )
         result = agent._run_shell("rm -rf /important/data")
         assert "BLOCKED" in result
+        # Floor usable for the allow path (nested hosts fail-closed without this).
+        monkeypatch.setattr(
+            "cosmic_cli.sandbox.wrap_argv_for_l0_shell",
+            lambda cmd, force_bare=False, **kw: ["/bin/zsh", "-c", cmd],
+        )
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = Mock(stdout="ok", stderr="", returncode=0)
             result = agent._run_shell("ls -l")
             assert "ok" in result
-
 
 class TestUIIntegration:
     def test_add_directive_creates_agent(self):

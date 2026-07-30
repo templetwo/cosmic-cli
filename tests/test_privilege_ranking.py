@@ -293,15 +293,23 @@ def test_sandbox_toml_declares_cosmic_cli_deny():
 
 
 def test_wrap_argv_uses_seatbelt_on_macos():
-    from cosmic_cli.sandbox import reset_seatbelt_probe, seatbelt_applies
+    from cosmic_cli.sandbox import (
+        FloorUnavailableError,
+        reset_seatbelt_probe,
+        seatbelt_applies,
+    )
 
     reset_seatbelt_probe()
-    argv = wrap_argv_for_l0_shell("echo hi")
     if platform.system() == "Darwin" and sandbox_available() and seatbelt_applies():
+        argv = wrap_argv_for_l0_shell("echo hi")
         assert argv[0].endswith("sandbox-exec") or "sandbox-exec" in argv[0]
         assert "-f" in argv
+    elif platform.system() == "Darwin" and sandbox_available():
+        # Nested / denied: floor present but unusable → fail closed, not bare.
+        with pytest.raises(FloorUnavailableError):
+            wrap_argv_for_l0_shell("echo hi")
     else:
-        # Nested sandbox hosts: binary may exist but apply fails → bare shell.
+        argv = wrap_argv_for_l0_shell("echo hi")
         assert "-c" in argv
         assert "sandbox-exec" not in argv[0]
 
@@ -315,8 +323,8 @@ def test_is_sandbox_apply_failure_detects_nested_deny():
     assert not is_sandbox_apply_failure("command not found")
 
 
-def test_shell_falls_back_when_seatbelt_apply_fails(monkeypatch):
-    """Live nested-sandbox shape: first argv seatbelt fails, bare succeeds."""
+def test_shell_fails_closed_when_seatbelt_apply_fails(monkeypatch):
+    """Nested-sandbox shape: seatbelt apply fails → BLOCKED, no bare re-run."""
     from unittest.mock import Mock
 
     from cosmic_cli.agents import StargazerAgent
@@ -330,7 +338,6 @@ def test_shell_falls_back_when_seatbelt_apply_fails(monkeypatch):
 
     def fake_run(argv, **kwargs):
         calls.append(list(argv) if isinstance(argv, (list, tuple)) else argv)
-        # First call: seatbelt-shaped argv fails apply
         if isinstance(argv, (list, tuple)) and any(
             "sandbox-exec" in str(a) for a in argv
         ):
@@ -339,9 +346,9 @@ def test_shell_falls_back_when_seatbelt_apply_fails(monkeypatch):
                 stderr="sandbox-exec: sandbox_apply: Operation not permitted\n",
                 returncode=1,
             )
-        return Mock(stdout="hi\n", stderr="", returncode=0)
+        # Bare re-run must not happen — if it does, this would green wrongly.
+        return Mock(stdout="SECRET_EXFIL\n", stderr="", returncode=0)
 
-    # Force first wrap to look like seatbelt even if probe would say bare
     def fake_wrap(cmd, force_bare=False, **kw):
         if force_bare:
             return ["/bin/zsh", "-c", cmd]
@@ -353,10 +360,56 @@ def test_shell_falls_back_when_seatbelt_apply_fails(monkeypatch):
     monkeypatch.setattr("cosmic_cli.agents.subprocess.run", fake_run)
 
     out = agent._run_shell("echo hi")
-    assert "hi" in out
+    assert "BLOCKED" in out
+    assert "SECRET_EXFIL" not in out
     assert any("sandbox-exec" in str(c) for c in calls)
-    assert any(isinstance(c, list) and "zsh" in str(c[0]) for c in calls)
-    assert any("seatbelt unusable" in w for w in agent.warnings)
+    # No bare second run
+    assert not any(
+        isinstance(c, list) and c and "zsh" in str(c[0]) and "sandbox-exec" not in str(c)
+        for c in calls
+    )
+    assert any("fail-closed" in w or "unusable" in w for w in agent.warnings)
+
+
+def test_fragmented_token_store_read_fails_closed_when_floor_unusable(monkeypatch):
+    """Claude #13264 attack: DiD clears fragmentation; floor must not bare-exec.
+
+    Payload never spells ``.cosmic-cli`` contiguously; ranking DiD returns None.
+    When seatbelt cannot apply, L0 shell must BLOCK — not execute under DiD alone.
+    """
+    from cosmic_cli.agents import StargazerAgent
+    from cosmic_cli import ranking
+    from cosmic_cli.sandbox import FloorUnavailableError, reset_seatbelt_probe
+
+    payload = (
+        "python3 -c \"import pathlib; d='.cosmic'; e='-cli'; f=d+e; "
+        "p=pathlib.Path.home()/f/'approvals.json'; print(open(str(p)).read())\""
+    )
+    assert ranking.touches_approval_surface(payload) is None
+    assert ranking.is_opaque_shell_wrapper(payload) is None
+
+    reset_seatbelt_probe()
+    agent = StargazerAgent(
+        "t", api_key="test_key", quiet=True, use_helix=False, exec_mode="safe"
+    )
+
+    def boom_wrap(cmd, force_bare=False, **kw):
+        if force_bare:
+            raise AssertionError("force_bare must not be used after AMEND")
+        raise FloorUnavailableError("nested sandbox (test)")
+
+    import cosmic_cli.sandbox as sb
+
+    monkeypatch.setattr(sb, "wrap_argv_for_l0_shell", boom_wrap)
+    # If bare path were taken, subprocess would run — ensure it is never called.
+    monkeypatch.setattr(
+        "cosmic_cli.agents.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess must not run")),
+    )
+
+    out = agent._run_shell(payload)
+    assert "BLOCKED" in out
+    assert "approvals" not in out.lower() or "BLOCKED" in out
 
 
 @pytest.mark.skipif(
@@ -373,7 +426,8 @@ def test_seatbelt_blocks_read_of_token_store(tmp_path, monkeypatch):
     if not seatbelt_applies(force_probe=True):
         pytest.skip(
             "seatbelt binary present but cannot apply here "
-            "(nested sandbox / host policy) — bare-shell fallback is intentional"
+            "(nested sandbox / host policy) — L0 shell fail-closed; "
+            "live floor deny cannot be falsified on this host"
         )
 
     home = tmp_path / "home"
