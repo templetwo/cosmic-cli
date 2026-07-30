@@ -3,9 +3,11 @@
 Reads a cockpit PreToolUse envelope on stdin, classifies the tool call, runs it
 through the FROZEN compass (policy rules from COSMIC.md, then check_shell for the
 shell class; MCP and unknown tools are deny-by-default in the classifier BEFORE
-the rule engine, because evaluate_rules is fail-open on no-match). Emits the
-RFC v1.1 proof-of-allow sentinel `COSMIC-ALLOW v1 <nonce>` on stdout ONLY for a
-genuine OPEN decision, and nothing on stdout otherwise.
+the rule engine, because evaluate_rules is fail-open on no-match). The `use_tool`
+MCP bridge is resolved to the call it ACTUALLY performs before anything is
+decided, so wrapping a call never buys it a weaker class than invoking it
+directly. Emits the RFC v1.1 proof-of-allow sentinel `COSMIC-ALLOW v1 <nonce>`
+on stdout ONLY for a genuine OPEN decision, and nothing on stdout otherwise.
 
 Stdout contract (RFC v1.1, mandatory): stdout is the sentinel line on OPEN and
 empty otherwise; every diagnostic goes to stderr; stdin is opaque bytes parsed as
@@ -74,6 +76,31 @@ _INERT = {
     "search_tool",
 }
 
+# Every tool name this classifier recognizes as a LOCAL capability. A `use_tool`
+# bridge call naming one of these IS that call, and must be gated as that call
+# (see _unwrap_bridge).
+_KNOWN_LOCAL = _SHELL | _MUTATE | _READ | _INERT
+
+# The bridge nests one call inside another. A bridge nested inside a bridge has
+# no legitimate cockpit shape; unwrap a couple of levels defensively and DENY
+# past that rather than fall through to a permissive class.
+_MAX_BRIDGE_DEPTH = 4
+
+# Which keys inside a bridge envelope name the wrapped call and carry its
+# arguments. Both snake_case and the envelope's own camelCase spelling are
+# accepted: a cockpit that mirrors `toolName`/`toolInput` inside the bridge must
+# not read as "names no tool" and slip onto the permissive path.
+_BRIDGE_NAME_KEYS = ("tool_name", "toolName", "name", "tool")
+_BRIDGE_ARG_KEYS = ("tool_input", "toolInput", "arguments")
+
+# The NETWORK corpus is the ONLY thing an external-MCP bridge call is matched
+# against, so truncating it truncates the SCAN, not just a display string: with
+# json.dumps(sort_keys=True) an attacker-chosen key that sorts before the real
+# one (e.g. "aaa_padding") could push the payload past a small window. This
+# bound exists only to keep rule regexes off unbounded input and is large enough
+# that padding evasion is not practical. It was 500 bytes before (CC-005).
+_ARGS_SCAN_LIMIT = 64 * 1024
+
 
 def _reason(msg: str) -> None:
     """Diagnostics to stderr ONLY — never stdout (would break the contract)."""
@@ -107,12 +134,65 @@ class _Deny(Exception):
     """Internal: a deny with a stderr reason. Never carries payload to stdout."""
 
 
+def _bridge_args(tool_input: dict) -> Tuple[dict | None, bool]:
+    """The wrapped call's own arguments. Returns (args, well_formed).
+
+    A bridge envelope may nest the real arguments under one of
+    ``_BRIDGE_ARG_KEYS``, or may carry them flattened alongside the routing
+    keys. When a nesting key is PRESENT but is not an object, that is the same
+    malformed shape ``decide`` already refuses for a top-level envelope, and it
+    must not be repaired into an empty (and therefore harmless-looking) dict.
+    """
+    for k in _BRIDGE_ARG_KEYS:
+        if k in tool_input:
+            v = tool_input[k]
+            return (v, True) if isinstance(v, dict) else (None, False)
+    return (tool_input, True)  # flattened bridge shape: args live on the outer dict
+
+
+def _unwrap_bridge(tool_name: str, tool_input: dict) -> Tuple[str, dict, bool]:
+    """Resolve a ``use_tool`` envelope to the call it ACTUALLY performs.
+
+    Returns (effective_tool_name, effective_tool_input, well_formed).
+
+    ``use_tool`` is the MCP invocation bridge: it carries a real call in a nested
+    envelope. If the wrapped name is one this classifier already knows, the
+    effective call IS that call and must be routed through its real ActionType —
+    otherwise the bridge is a universal bypass of every protection keyed on
+    ActionType (the sensitive-path refusal and the check_shell DiD chain both
+    are), for ANY wrapped tool, with no clever payload required (CC-005).
+
+    A wrapped name this classifier does NOT know is a genuine external MCP
+    ``server__tool`` — the bridge's actual purpose — and is deliberately left on
+    the NETWORK/policy-rule path unchanged.
+
+    Idempotent: unwrapping an already-effective call is a no-op, so callers may
+    apply it defensively.
+    """
+    for _ in range(_MAX_BRIDGE_DEPTH):
+        if tool_name != "use_tool":
+            return (tool_name, tool_input, True)
+        target = _extract(tool_input, *_BRIDGE_NAME_KEYS)
+        if target != "use_tool" and target not in _KNOWN_LOCAL:
+            return (tool_name, tool_input, True)  # external MCP: NETWORK path
+        args, ok = _bridge_args(tool_input)
+        if not ok:
+            return (target, {}, False)
+        tool_name, tool_input = target, args
+    return (tool_name, tool_input, False)  # bridge nested past any sane depth
+
+
 def classify(tool_name: str, tool_input: dict) -> Tuple[str, ActionType | None, str]:
     """Return (kind, action_type, match_corpus). kind in {allow, gate, deny}.
 
     Deny-by-default: an MCP ``server__tool`` or any unrecognized name is denied by
-    the classifier, before any rule engine runs.
+    the classifier, before any rule engine runs. A ``use_tool`` bridge wrapping a
+    known local tool is classified as that tool (see _unwrap_bridge), so the
+    wrapped call cannot outrank the direct one.
     """
+    tool_name, tool_input, well_formed = _unwrap_bridge(tool_name, tool_input)
+    if not well_formed:
+        return ("deny", None, "")
     if tool_name in _INERT:
         return ("allow", None, "")
     if tool_name in _SHELL:
@@ -134,23 +214,28 @@ def classify(tool_name: str, tool_input: dict) -> Tuple[str, ActionType | None, 
                 "output_file", "command",  # task-output readers
             ),
         )
-    # use_tool: MCP invocation bridge. Gate as NETWORK corpus (tool name + args)
-    # so COSMIC.md rules can still PAUSE/WITNESS; default with no rule is OPEN.
+    # use_tool wrapping a name this classifier does NOT know: a genuine external
+    # MCP server__tool, which is what the bridge exists for. Gate as NETWORK
+    # corpus (tool name + args) so COSMIC.md rules can still PAUSE/WITNESS;
+    # default with no rule is OPEN. Wrapped LOCAL tools never reach here — they
+    # were re-dispatched through their real ActionType by _unwrap_bridge above.
     # External server__tool names still deny when called as the tool_name itself.
     if tool_name == "use_tool":
-        target = _extract(tool_input, "tool_name", "name", "tool")
-        # Qualified MCP names remain deny-by-default when the *outer* tool is
-        # the server__tool form; when nested under use_tool we still scan.
-        args_preview = ""
+        target = _extract(tool_input, *_BRIDGE_NAME_KEYS)
+        args_scan = ""
         try:
-            raw_args = tool_input.get("tool_input") or tool_input.get("arguments") or {}
+            raw_args: object = {}
+            for k in _BRIDGE_ARG_KEYS:
+                if tool_input.get(k):
+                    raw_args = tool_input[k]
+                    break
             if isinstance(raw_args, dict):
-                args_preview = json.dumps(raw_args, sort_keys=True)[:500]
+                args_scan = json.dumps(raw_args, sort_keys=True)[:_ARGS_SCAN_LIMIT]
             elif isinstance(raw_args, str):
-                args_preview = raw_args[:500]
+                args_scan = raw_args[:_ARGS_SCAN_LIMIT]
         except Exception:
-            args_preview = ""
-        return ("gate", ActionType.NETWORK, f"{target}\n{args_preview}")
+            args_scan = ""
+        return ("gate", ActionType.NETWORK, f"{target}\n{args_scan}")
 
     # MCP qualified name (server__tool) or anything unknown: deny-by-default.
     return ("deny", None, "")
@@ -175,16 +260,24 @@ def decide(envelope: dict, rules, exec_mode: str = "safe") -> Optional[str]:
     if not isinstance(tool_input, dict):
         raise _Deny("malformed envelope: toolInput is not an object")
 
-    kind, action_type, corpus = classify(str(tool_name), tool_input)
+    # Resolve the use_tool bridge to the call it actually performs BEFORE any
+    # check runs, so every hardcoded protection below reads the wrapped call's
+    # own arguments and not the bridge's routing keys (CC-005). No-op for a
+    # direct call; classify() applies the same resolution independently.
+    eff_name, eff_input, bridge_ok = _unwrap_bridge(str(tool_name), tool_input)
+    if not bridge_ok:
+        raise _Deny("malformed/over-nested use_tool bridge envelope")
+
+    kind, action_type, corpus = classify(eff_name, eff_input)
     if kind == "allow":
         return None
     if kind == "deny":
-        raise _Deny(f"deny-by-default: unclassified/MCP tool {str(tool_name)!r}")
+        raise _Deny(f"deny-by-default: unclassified/MCP tool {eff_name!r}")
 
     # Sensitive-path refusal for the read/write classes (unification table).
     if action_type in (ActionType.READ, ActionType.WRITE):
         path = _extract(
-            tool_input, "path", "file_path", "filePath", "target_file"
+            eff_input, "path", "file_path", "filePath", "target_file"
         )
         if path and (
             is_sensitive_path(path)
