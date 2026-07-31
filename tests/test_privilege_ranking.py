@@ -119,6 +119,41 @@ def test_opaque_shell_wrappers_fail_closed():
     assert is_opaque_shell_wrapper("bash -c 'ls -la'") is None
 
 
+def test_cc007_file_io_in_interpreter_payload_is_nested_opaque():
+    """CC-007: open()/read_text()/read_bytes() are nested-opaque triggers.
+
+    The check's whole premise is "this interpreter payload can act on the
+    filesystem in a way the DiD substring scan cannot see into". A payload that
+    builds its target with chr() and reads it with plain open() satisfies that
+    premise exactly as well as os.system() does, so it must fail closed too.
+    """
+    target = "/.cosmic-cli/last_pause_token.json"
+    chrs = "+".join(f"chr({ord(c)})" for c in target)
+    chr_built = (
+        "python3 -c 'import os;"
+        f"p=os.path.expanduser(chr(126))+{chrs};print(open(p).read())'"
+    )
+    # The evasion premise: no DiD substring appears anywhere in the command.
+    assert ".cosmic-cli" not in chr_built
+    assert "last_pause_token" not in chr_built
+    assert is_opaque_shell_wrapper(chr_built), "chr()-built open() must fail closed"
+
+    assert is_opaque_shell_wrapper("python3 -c \"print(open('/etc/passwd').read())\"")
+    assert is_opaque_shell_wrapper("python3 -c \"import io; print(io.open('x').read())\"")
+    assert is_opaque_shell_wrapper("python3 -c \"import pathlib; pathlib.Path('x').read_text()\"")
+    assert is_opaque_shell_wrapper("python3 -c \"import pathlib; pathlib.Path('x').read_bytes()\"")
+
+    # Benign side: ordinary one-liners must keep working, and the word boundary
+    # must keep \bopen( off os.popen( (already covered by process.popen).
+    assert is_opaque_shell_wrapper("python3 -c 'print(1)'") is None
+    assert is_opaque_shell_wrapper("bash -c 'ls -la'") is None
+    assert is_opaque_shell_wrapper("node -e 'console.log(2+2)'") is None
+    assert is_opaque_shell_wrapper('python3 -c "import os; print(os.popen)"') is None
+    # No interpreter entrypoint: open( in ordinary text is not a wrapper.
+    assert is_opaque_shell_wrapper("grep -n 'open(' cosmic_cli/gate.py") is None
+    assert is_opaque_shell_wrapper("python3 scripts/build.py") is None
+
+
 def test_check_shell_witnesses_approval_surface():
     blocked = check_shell("cosmic-cli helix accept-pause", exec_mode="safe")
     assert blocked and "privilege ranking" in blocked
@@ -376,15 +411,31 @@ def test_fragmented_token_store_read_fails_closed_when_floor_unusable(monkeypatc
 
     Payload never spells ``.cosmic-cli`` contiguously; ranking DiD returns None.
     When seatbelt cannot apply, L0 shell must BLOCK — not execute under DiD alone.
+
+    CC-007 moved the ORIGINAL #13264 payload out of this test's reach: the
+    python3 -c form read the store with ``open(``, which is now a nested-opaque
+    trigger, so ``_compass_gate``'s check_shell blocks it before ``_run_shell``
+    ever asks the floor for an argv. Keeping that payload here would have left
+    the test green while silently no longer exercising the floor at all. The
+    original is pinned below as a CC-007 regression case, and the floor is now
+    driven by a SHELL-level fragmentation (a glob) that DiD still misses — the
+    known-partial CC-004 matcher class, which is exactly the premise this test
+    needs: DiD says None, so only the floor can be what blocks.
     """
     from cosmic_cli.agents import StargazerAgent
     from cosmic_cli import ranking
     from cosmic_cli.sandbox import FloorUnavailableError, reset_seatbelt_probe
 
-    payload = (
+    original_13264 = (
         "python3 -c \"import pathlib; d='.cosmic'; e='-cli'; f=d+e; "
         "p=pathlib.Path.home()/f/'approvals.json'; print(open(str(p)).read())\""
     )
+    assert ranking.is_opaque_shell_wrapper(original_13264) is not None, (
+        "CC-007 regression: open() inside a visible interpreter payload must "
+        "re-arm the nested-opaque block"
+    )
+
+    payload = "cat ~/.cos*/approvals.json"
     assert ranking.touches_approval_surface(payload) is None
     assert ranking.is_opaque_shell_wrapper(payload) is None
 
@@ -409,7 +460,10 @@ def test_fragmented_token_store_read_fails_closed_when_floor_unusable(monkeypatc
 
     out = agent._run_shell(payload)
     assert "BLOCKED" in out
-    assert "approvals" not in out.lower() or "BLOCKED" in out
+    # Pin WHICH layer blocked. Without this the test greens whenever the DiD
+    # layer happens to catch the payload, and stops proving anything about the
+    # floor — which is precisely how CC-007 would have hollowed it out.
+    assert "sandbox floor unavailable" in out, out
 
 
 @pytest.mark.skipif(
