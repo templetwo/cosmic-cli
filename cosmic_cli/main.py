@@ -20,7 +20,12 @@ from rich.panel import Panel
 from xai_sdk import Client
 from xai_sdk.chat import assistant, system, user
 
-from cosmic_cli.agents import DEFAULT_MODEL, SESSION_DIR, StargazerAgent
+from cosmic_cli.agents import (
+    DEFAULT_MODEL,
+    MAX_STEPS_DEFAULT,
+    SESSION_DIR,
+    StargazerAgent,
+)
 from cosmic_cli import buildinfo
 from cosmic_cli import helix_bridge
 from cosmic_cli.init_cmd import write_init
@@ -594,7 +599,9 @@ def _print_review(report: Dict[str, Any]) -> None:
     type=click.Choice(["safe", "interactive", "full"]),
     default="safe",
 )
-@click.option("--max-steps", default=20, show_default=True, type=int)
+@click.option(
+    "--max-steps", default=MAX_STEPS_DEFAULT, show_default=True, type=int
+)
 @click.option("--model", default=DEFAULT_MODEL, show_default=True)
 @click.option("-q", "--quiet", is_flag=True, help="Less streaming noise")
 @click.option(
@@ -1362,7 +1369,9 @@ def stargazer() -> None:
     type=click.Choice(["safe", "interactive", "full"]),
     default="safe",
 )
-@click.option("--max-steps", default=20, show_default=True, type=int)
+@click.option(
+    "--max-steps", default=MAX_STEPS_DEFAULT, show_default=True, type=int
+)
 @click.option("--model", default=DEFAULT_MODEL, show_default=True)
 @click.option("-q", "--quiet", is_flag=True)
 @click.option("--verify/--no-verify", default=True)
