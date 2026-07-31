@@ -360,6 +360,85 @@ def test_sensitive_write_refused(ws, capsys, monkeypatch):
     assert out == "" and "sensitive-path" in err
 
 
+# ---- CC-008: WRITE path-key gap (no kernel-floor backstop on WRITE) ----
+
+def test_write_with_unrecognized_path_key_denies(ws, capsys, monkeypatch):
+    """Hermes W9: filepath (not path/file_path/…) must not skip the safety net.
+
+    Before CC-008, decide() extracted "" and `if path and ...` skipped the
+    sensitive check entirely → OPEN. WRITE has no seatbelt floor.
+    """
+    store = str(ws / ".cosmic-cli" / "approvals.json")
+    # Build envelope with only the alternate key — _env may not know "filepath"
+    env = {
+        "toolName": "Write",
+        "toolInput": {"filepath": store, "content": "pwned"},
+    }
+    code, out, err = _run(env, capsys, monkeypatch, ws)
+    assert out == "", f"WRITE via filepath key was ALLOWED: err={err!r}"
+    assert "cannot verify path safety" in err or "sensitive-path" in err
+
+
+def test_write_with_dest_key_resolves_and_refuses_approval_store(
+    ws, capsys, monkeypatch
+):
+    """Option (b): common alias 'dest' is extracted; approval store still denied."""
+    store = str(ws / ".cosmic-cli" / "approvals.json")
+    env = {
+        "toolName": "Write",
+        "toolInput": {"dest": store, "content": "x"},
+    }
+    code, out, err = _run(env, capsys, monkeypatch, ws)
+    assert out == ""
+    assert "sensitive-path" in err
+
+
+def test_write_empty_path_denies(ws, capsys, monkeypatch):
+    """Empty path string must deny, not treat as 'nothing to check'."""
+    env = {
+        "toolName": "Write",
+        "toolInput": {"path": "", "content": "x"},
+    }
+    code, out, err = _run(env, capsys, monkeypatch, ws)
+    assert out == ""
+    assert "cannot verify path safety" in err
+
+
+def test_write_missing_path_key_denies(ws, capsys, monkeypatch):
+    """No path field at all → deny-by-default."""
+    env = {
+        "toolName": "Write",
+        "toolInput": {"content": "only body"},
+    }
+    code, out, err = _run(env, capsys, monkeypatch, ws)
+    assert out == ""
+    assert "cannot verify path safety" in err
+
+
+def test_write_recognized_path_key_still_opens_for_benign_file(
+    ws, capsys, monkeypatch
+):
+    """Both-sides: legitimate Write with path= still OPEN (no regression)."""
+    code, out, err = _run(
+        _env("Write", path="notes.txt", content="hello"),
+        capsys,
+        monkeypatch,
+        ws,
+    )
+    assert out.strip().startswith("COSMIC-ALLOW"), f"benign WRITE regressed: {err!r}"
+
+
+def test_write_file_path_alias_still_opens_for_benign_file(ws, capsys, monkeypatch):
+    """Recognized file_path key still works (cockpit alias)."""
+    code, out, err = _run(
+        _env("Write", file_path="notes.txt", content="hello"),
+        capsys,
+        monkeypatch,
+        ws,
+    )
+    assert out.strip().startswith("COSMIC-ALLOW"), f"file_path WRITE regressed: {err!r}"
+
+
 # ---- wrapper contract ----
 
 def test_verb_check_exit0_no_stdout(ws, capsys, monkeypatch):
