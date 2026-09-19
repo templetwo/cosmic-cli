@@ -1,0 +1,232 @@
+# Phase-1 PR checklist — Pilot Board + MissionBus v1
+
+Source: Anthony, 2026-09-19. This is the bounded implementation assignment for the Grok Build branch, covering part of UPG-005/006 in [VERSION_UPGRADE_PLAN.md](VERSION_UPGRADE_PLAN.md).
+
+Contract inputs: [Pilot Board layout](PILOT_BOARD_SPEC.md), [MissionBus v1](MISSION_BUS_SPEC.md), finish-line honesty, and L2-only PAUSE approval. This checklist takes precedence over broader blueprint deliverables for this PR. Preserve CLI and Mission Control through compatible event writing/reading. All boxes begin unchecked; no implementation or validation is claimed by this planning commit.
+
+## Definition of done
+
+- [ ] Session JSONL lines carry v, mission, seq, ts, session.
+- [ ] Legacy start/step/end and mission.start/step.proposed/mission.end coexist through dual-write or readers that support both; define deduplication if dual-written.
+- [ ] finish_basis appears only on finished statuses; verified iff finish_basis=verifier.
+- [ ] Echo remains enabled where configured, retains existing keys, and adds only optional mission/ts in this slice.
+- [ ] LocalMissionBus drives TUI updates rather than exclusive agent-log polling.
+- [ ] `cosmic-cli tui` shows MissionRail, StepTape, and InstrumentStack; minimal instruments are sufficient.
+- [ ] Board PAUSE approval/decline uses the shared CLI/gateway authority path; no token body appears on bus or UI.
+- [ ] DiffPeek shows the last mutation path from fs.mutate or a temporary log-derived fallback.
+- [ ] Finish-line and new bus tests pass; run `pytest tests/ -q` and accurately classify any battery residuals or environment limitations.
+- [ ] Headless `cosmic-cli do` preserves status rendering and exit codes, including blocked=4 and existing finish semantics.
+- [ ] Two concurrent directives remain supported and do not mix events, selection, or approvals.
+
+## Explicit non-goals
+
+- Command palette, Helix recall drawer, compact-tab polish.
+- Full step.finished coverage or every tool event.
+- Web-dashboard rewrite; its legacy tail continues to work.
+- Unix sockets or multiprocess bus transport.
+- Replacing the prompt_toolkit file browser.
+- Changes to compass classification rules or the kernel floor.
+- UPG-001's full typed shell-result refactor, UPG-002 progress detection, UPG-003 budgets, or UPG-004 consolidated handoff.
+
+Full debrief modal/ReviewDock behavior from the broader board blueprint is not a Phase-1 ship gate; status/basis must still display honestly. Diff bodies, undo, cancellation, and richer instruments follow the backlog below.
+
+## Preflight — read before coding
+
+| File / seam | Purpose |
+| --- | --- |
+| cosmic_cli/agents.py | _session_write, _append_echo, execute, FINISH and BLOCKED paths |
+| cosmic_cli/gateway.py | AuthorizationReceipt, mint/claim ownership, execute_with_receipt |
+| cosmic_cli/ui.py | DirectivesUI, refresh, threading, APIKeyScreen |
+| cosmic_cli/theme.py | Status, step_bar, palette; reuse these |
+| cosmic_cli/main.py | tui/do wiring, dashboard allowlist, operator approval command |
+| cosmic_cli/dashboard.py | Current session and echo readers |
+| tests/test_finish_line.py | Finish/basis invariants and persistence tests |
+| Helix bridge, gate, ranking, and accept-pause path | Reuse actual operator authority and single-use claim/staging logic |
+| tests/conftest.py and tests/test_isolation.py | Existing protections against test pollution of live stores |
+
+## Commit 1 — Bus and event foundation
+
+- [ ] Add `cosmic_cli/events.py`: statuses, finish bases, event names, validation, and normalize_legacy.
+- [ ] Single-source FINISHED_STATUSES or maintain a compatibility re-export from agents.
+- [ ] Add `cosmic_cli/bus.py`: publish, subscribe, unsubscribe; isolate subscriber exceptions from the agent loop.
+- [ ] Add `tests/test_bus_schema.py`: envelope fields, verified/verifier equivalence, absent basis for blocked/max_steps, and sensitive-data checks where implemented.
+- [ ] Validate namespace conversion without inventing missing evidence in legacy records.
+
+Acceptance: unit tests pass; agent behavior is unchanged at this step.
+
+## Commit 2 — Agent emission and compatibility
+
+- [ ] Initialize `_seq = 0` and an injectable LocalMissionBus per agent.
+- [ ] Add `_emit(event, **payload)` owning envelope creation, redaction, sequence assignment, publication, and raw JSONL append; no duplicate timestamp/session injection.
+- [ ] Emit compatible start events with identity.
+- [ ] Emit step.proposed with n, action verb, raw, head; keep legacy step consumers working.
+- [ ] Emit end with status, optional basis, edited, steps, warnings, outcome, and model.
+- [ ] Emit finish.declared immediately before the accepted finish end, with status, basis, synthesized, and redacted text.
+- [ ] On BLOCKED, emit compass.verdict when classification is known; end/echo have blocked status and no basis.
+- [ ] Add optional mission/ts to echo while retaining existing fields and write_echo behavior.
+- [ ] Preserve FINISH decision logic and existing BLOCKED return/no-thrash behavior.
+- [ ] Extend finish-line persistence tests for end/echo agreement.
+- [ ] Add scripted-agent sequence test and synthesized-finish bus test.
+
+Acceptance: headless do works, and current dashboard-tail behavior remains compatible. If names change before reader migration, dual-write during the intermediate commits.
+
+## Commit 3 — PAUSE and compass hooks
+
+- [ ] Emit gate.pause_minted at the actual mint point with action_summary, action_sha256, expiry, optional pending_id, and only safe opaque correlation information.
+- [ ] Never emit a full token; supplied token_id_prefix is optional and at most 8 characters, and should be omitted if it exposes credential bytes.
+- [ ] Emit gate.pause_resolved for approval, decline, expiry, or invalidity using the defined actor/correlation semantics.
+- [ ] Emit OPEN/WITNESS/PAUSE compass verdicts where authoritative classification is available.
+- [ ] Prefer the agent seam that knows session/mission; keep gateway free of UI imports.
+- [ ] If needed, inject an optional gateway event callback defaulting to no-op.
+- [ ] Test mint opacity, exactly-once approval claim, and decline semantics matching existing CLI behavior.
+
+Acceptance: `helix accept-pause` remains compatible and applicable gate/battery tests retain their expected results. Automatically expired/invalid records must not falsely claim an operator decision.
+
+## Commit 4 — High-value mutation, shell, and verifier events
+
+- [ ] Emit fs.mutate for successful EDIT/WRITE/CREATE through gateway/checkpoint: op, path, optional checkpoint_id/receipt_id.
+- [ ] Omit diff body initially or cap it at 8 KiB with truncation explicitly marked.
+- [ ] Emit shell.exec for SHELL/CODE/TEST: kind, redacted command, exit_code parsed only when present, blocked, output_head ≤500.
+- [ ] Emit verify.result for verify_cmd and auto_verify with distinct role values.
+- [ ] Never convert auto_verify success into mission verification.
+- [ ] Test successful mutation path emission and blocked shell output without false exit 0.
+
+Parsing existing result markers is explicitly permitted for this slice. Do not present it as completion of UPG-001's stronger execution-evidence design.
+
+## Commit 5 — TUI layout and event-driven state
+
+- [ ] Keep `cosmic_cli/ui.py` entry/import compatibility using DirectivesUI or a PilotApp alias; extract a tui package only when useful.
+- [ ] IdentityBar shows real version/model/Helix flag/status; unknown health is not painted healthy.
+- [ ] Left DataTable#mission_table: STATUS, STEPS, DIRECTIVE, BASIS.
+- [ ] Center RichLog#step_tape.
+- [ ] Right instruments: compass counts, pending list, session meta including cwd/verify_cmd/mode.
+- [ ] DirectiveBar retains Input, Deploy button, and Enter submission.
+- [ ] Collapsible DiffPeek starts hidden.
+- [ ] Reuse theme tokens and APIKeyScreen.
+- [ ] Add BoardState/Mission dataclasses and a reducer that has no UI or I/O side effects. Define whether it mutates state or returns a new state consistently.
+- [ ] Subscribe before execution starts; cross from worker thread using call_from_thread.
+- [ ] Prefer incremental bus updates; keep only a slow status/step reconciliation fallback.
+- [ ] Minimum bindings: ctrl+k, q, Enter, p, contextual y/n, D, and mission row selection.
+- [ ] Guard callbacks after unmount and unsubscribe when appropriate.
+- [ ] Preserve two concurrent directives and selected-mission tape isolation.
+
+Acceptance: stable basic layout at 120×40 and 100×30; two missions can run and be selected independently; shutdown with a late event does not crash. Compact-tab polish remains deferred.
+
+## Commit 6 — Operator PAUSE modal
+
+- [ ] Add PauseApproveScreen with action summary, reason/rule, L2/token-opacity hint, APPROVE, DECLINE, and Esc.
+- [ ] Notify on mint; optionally open the modal for a selected mission or single mission.
+- [ ] Extract/reuse a shared helper behind CLI accept-pause and TUI approval; preserve existing TTY/ranking checks and exact action binding.
+- [ ] UI does not implement ad hoc credential-file I/O or pass tokens into widgets, notifications, or agent context.
+- [ ] Decline leaves the mission blocked without remint/retry thrash.
+- [ ] Test the modal with Textual Pilot where practical; at minimum test the shared approval helper and token opacity.
+- [ ] Demonstrate correct selection under two concurrent pending actions; never approve whichever global token happened to be minted last.
+
+Acceptance: approve stages/claims the selected action under the existing contract; decline stops visibly; CLI approval still works. Approval must be functional, not just a painted resolved row. Preserve current headless BLOCKED return; explicitly describe how an operator initiates any approved rerun/retry.
+
+## Commit 7 — Dashboard normalization and documentation
+
+- [ ] Normalize legacy and namespaced lifecycle/step events in dashboard readers.
+- [ ] Prefer step.proposed.head; fall back to legacy action.
+- [ ] Read basis from end or mission.end; old records without v remain readable.
+- [ ] Avoid duplicate steps/end rollups from compatibility aliases.
+- [ ] Document the implemented Phase-1 event subset and compatibility policy in `docs/MISSION_BUS_v1.md` or the README, linking the broader draft specification.
+- [ ] Document TUI PAUSE bindings in COSMIC.md or a pilot note.
+- [ ] Manually verify dashboard `/api/state` using an isolated fixture and `dashboard --no-open`.
+
+## Cross-cutting checks
+
+**Safety:** No approval token in bus/log/UI/notifications; free text redacted before emission; sensitive READ/mutation refusals remain intact. Escape dynamic Rich markup. Operator authority comes from the shared control path, not an event field.
+
+**Compatibility:** Echo status chips work; blocked stays exit 4; verified/needs_review retain current exits; write_echo=False and use_helix=False remain supported. No package-version bump until the release target is selected.
+
+**Concurrency:** Worker threads publish; UI changes occur on the UI thread. JSONL has one serialized writer per mission. Prevent event payload mutation from corrupting another sink. Distinct simultaneous missions must have distinct files/sequences without altering session-based approval binding.
+
+**Identity:** Preserve mission/session meanings and token keying. Existing second-resolution mission filenames need explicit collision handling for the required concurrent case; use a compatible unique suffix if necessary, with regression coverage.
+
+**Isolation:** Existing fixture redirects agent echo/session writes and stubs Helix record. It does not prove every RPC/subprocess is isolated. New integration tests must also stub or isolate witness/call and approval stores, and must not read or alter real operator credentials.
+
+## Suggested test matrix
+
+| Test | Assertion |
+| --- | --- |
+| test_finish_line.py | Existing decision logic remains green |
+| Finish-line persistence tests | End and echo agree on status/basis |
+| test_bus_schema.py | Envelope, enums, finish combinations, redaction |
+| test_bus_agent_emit.py | Scripted execution emits ordered start/step/end |
+| test_pause_bus_opacity.py | Serialized mint/resolution data contain no credential bodies |
+| test_dashboard_normalize.py | Legacy and v1 both parse without duplicates |
+| Textual interaction coverage | Selection, worker updates, modal y/n, shutdown, concurrent missions |
+| Manual headless smoke | v1 session output and unchanged CLI exits |
+| Manual TUI | Deploy → live steps → forced PAUSE → decline → blocked |
+| Separate approval scenario | Shared CLI and board approval preserve one-use behavior |
+| Manual dashboard | Old/new sessions and chronicle views load |
+
+Run `pytest tests/ -q`, plus focused finish-line/bus tests while developing. Report actual commands, interpreter, counts, and outcomes. Existing red-team results distinguish gate-contract residuals from kernel-floor enforcement; do not change classification or assertions merely to turn the battery green.
+
+## PR description template
+
+Use after implementation, replacing placeholders with measured results and final scope:
+
+```markdown
+## Summary
+Phase-1 avionics adds MissionBus v1 from StargazerAgent, a multi-pane pilot TUI
+subscriber, and operator-only PAUSE approve/decline. Headless do, echo, and
+Mission Control session readers retain compatibility.
+
+## Why
+The existing TUI relies on log strings and a table. Structured events expose
+finish_basis, step activity, and pending PAUSE actions in the mission board.
+
+## Included
+- events.py / bus.py and validation tests
+- Compatible mission.start, step.proposed, finish.declared, mission.end records
+- PAUSE mint/resolution events without credentials
+- Minimal fs.mutate / shell.exec / verify.result
+- Pilot grid and PauseApproveScreen
+- Dashboard legacy normalization
+
+## Deferred
+Palette, Helix drawer, socket bus, dashboard redesign, compact tabs, undo,
+cancellation, and full tool-event coverage.
+
+## Validation
+- [ ] pytest tests/ -q — insert result
+- [ ] Focused finish-line and bus tests — insert result
+- [ ] Headless do smoke — insert result
+- [ ] TUI PAUSE approval and decline — insert result
+- [ ] Dashboard old/new session check — insert result
+```
+
+## Risks and mitigations
+
+| Risk | Mitigation |
+| --- | --- |
+| Dashboard rejects new names | Compatibility writes/readers plus normalization tests |
+| Duplicate timestamps/sequences | _emit owns envelope; raw append does not wrap it again |
+| UI-thread races / late shutdown events | UI-thread dispatch, unsubscribe, guarded teardown |
+| PAUSE remint/retry loop | Preserve BLOCKED return; one unresolved mint per bound action |
+| Token exposure | Opacity tests; shared privileged helper never gives credentials to widgets |
+| Large diffs inflate JSONL | Omit initially or enforce cap |
+| Concurrent approvals choose wrong action | Bind pending selection to exact action/session before staging |
+| Green-looking unverified run | Shared finish enums and status/basis rendering tests |
+
+## Ship gate
+
+- [ ] Local suite and required CI results recorded accurately.
+- [ ] Headless smoke produces v1 session records with correct finish_basis rules.
+- [ ] TUI mission tape updates live from bus.
+- [ ] Forced PAUSE modal → decline → blocked; separate CLI accept-pause scenario works.
+- [ ] Board approval uses the real shared helper with exactly-once evidence.
+- [ ] Mission Control still displays old/new missions and steps.
+- [ ] Final diff/PR describes the implemented subset and unresolved limitations honestly.
+
+## After merge — Phase-1.1 backlog
+
+- Remove remaining log-parsing refresh.
+- Richer compass aggregation from the bus.
+- Diff bodies and checkpoint undo binding `u`.
+- TUI mission.cancel with defined child/process cleanup.
+- Shared query helpers with dashboard state().
+
+Implementation order: bus/events/tests → agent emission → PAUSE/compass → fs/shell/verify → TUI/state → shared approval/modal → dashboard/docs → reviewable PR. Branch publication/PR creation is a later delivery action; the branch-setup task does not itself claim it occurred.
