@@ -1,4 +1,4 @@
-"""Pilot Board TUI package. Phase-1 starts with the pure state reducer."""
+"""Pilot Board TUI package."""
 
 from cosmic_cli.tui.state import BoardState, Mission, apply_event
 

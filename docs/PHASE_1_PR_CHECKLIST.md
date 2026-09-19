@@ -99,22 +99,23 @@ Parsing existing result markers is explicitly permitted for this slice. Do not p
 
 ## Commit 5 — TUI layout and event-driven state
 
-- [ ] Keep `cosmic_cli/ui.py` entry/import compatibility using DirectivesUI or a PilotApp alias; extract a tui package only when useful.
-- [ ] IdentityBar shows real version/model/Helix flag/status; unknown health is not painted healthy.
-- [ ] Left DataTable#mission_table: STATUS, STEPS, DIRECTIVE, BASIS.
-- [ ] Center RichLog#step_tape.
-- [ ] Right instruments: compass counts, pending list, session meta including cwd/verify_cmd/mode.
-- [ ] DirectiveBar retains Input, Deploy button, and Enter submission.
-- [ ] Collapsible DiffPeek starts hidden.
-- [ ] Reuse theme tokens and APIKeyScreen.
-- [ ] Add BoardState/Mission dataclasses and a reducer that has no UI or I/O side effects. Define whether it mutates state or returns a new state consistently.
-- [ ] Subscribe before execution starts; cross from worker thread using call_from_thread.
-- [ ] Prefer incremental bus updates; keep only a slow status/step reconciliation fallback.
-- [ ] Minimum bindings: ctrl+k, q, Enter, p, contextual y/n, D, and mission row selection.
-- [ ] Guard callbacks after unmount and unsubscribe when appropriate.
-- [ ] Preserve two concurrent directives and selected-mission tape isolation.
+- [x] Keep `cosmic_cli/ui.py` entry/import compatibility using DirectivesUI or a PilotApp alias; extract a tui package only when useful.
+- [x] IdentityBar shows real version/model/Helix flag/status; unknown health is not painted healthy.
+- [x] Left DataTable#mission_table: STATUS, STEPS, DIRECTIVE, BASIS.
+- [x] Center RichLog#step_tape.
+- [x] Right instruments: compass counts, pending list, session meta including cwd/verify_cmd/mode.
+- [x] DirectiveBar retains Input, Deploy button, and Enter submission.
+- [x] Collapsible DiffPeek starts hidden.
+- [x] Reuse theme tokens and APIKeyScreen.
+- [x] Add BoardState/Mission dataclasses and a reducer that has no UI or I/O side effects. Define whether it mutates state or returns a new state consistently.
+- [x] Subscribe before execution starts; cross from worker thread using call_from_thread.
+- [x] Prefer incremental bus updates; keep only a slow status/step reconciliation fallback.
+- [x] Minimum bindings: ctrl+k, q, Enter, p, contextual y/n, D, and mission row selection.
+- [x] Guard callbacks after unmount and unsubscribe when appropriate.
+- [x] Preserve two concurrent directives and selected-mission tape isolation.
 
 Acceptance: stable basic layout at 120×40 and 100×30; two missions can run and be selected independently; shutdown with a late event does not crash. Compact-tab polish remains deferred.
+Evidence: `.venv/bin/python -c 'import cosmic_cli, pathlib; print(pathlib.Path(cosmic_cli.__file__).resolve())'` → this worktree `cosmic_cli/__init__.py`. Interpreter 3.10.12. `.venv/bin/python -m pytest tests/test_cosmic_cli.py tests/test_board_state.py tests/test_pilot_board.py -q` → 45 passed (23+12+10). `.venv/bin/python -m pytest tests/ --ignore=tests/battery -o addopts=` → 436 passed in 13.93s. `DirectivesUI = PilotApp`; APIKeyScreen unchanged. Bus subscribe happens before `agent.run()`; `_on_bus_event` uses `call_from_thread(self.apply_bus_event, event)`; `_detach_bus` on unmount. `floor_ok` stays `None` → IdentityBar paints `floor:unknown`, never `floor:ok`. PauseApproveScreen / compact tabs / palette deferred. Reducer still ignores `helix`/`root` on `mission.start` (UI absorbs those fields; not a reducer edit).
 
 ## Commit 6 — Operator PAUSE modal
 
