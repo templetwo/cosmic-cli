@@ -120,15 +120,16 @@ Evidence: `.venv/bin/python -c 'import cosmic_cli, pathlib; print(pathlib.Path(c
 
 ## Commit 6 — Operator PAUSE modal
 
-- [ ] Add PauseApproveScreen with action summary, reason/rule, L2/token-opacity hint, APPROVE, DECLINE, and Esc.
-- [ ] Notify on mint; optionally open the modal for a selected mission or single mission.
-- [ ] Extract/reuse a shared helper behind CLI accept-pause and TUI approval; preserve existing TTY/ranking checks and exact action binding.
-- [ ] UI does not implement ad hoc credential-file I/O or pass tokens into widgets, notifications, or agent context.
-- [ ] Decline leaves the mission blocked without remint/retry thrash.
-- [ ] Test the modal with Textual Pilot where practical; at minimum test the shared approval helper and token opacity.
-- [ ] Demonstrate correct selection under two concurrent pending actions; never approve whichever global token happened to be minted last.
+- [x] Add PauseApproveScreen with action summary, reason/rule, L2/token-opacity hint, APPROVE, DECLINE, and Esc.
+- [x] Notify on mint; optionally open the modal for a selected mission or single mission.
+- [x] Extract/reuse a shared helper behind CLI accept-pause and TUI approval; preserve existing TTY/ranking checks and exact action binding.
+- [x] UI does not implement ad hoc credential-file I/O or pass tokens into widgets, notifications, or agent context.
+- [x] Decline leaves the mission blocked without remint/retry thrash.
+- [x] Test the modal with Textual Pilot where practical; at minimum test the shared approval helper and token opacity.
+- [x] Demonstrate correct selection under two concurrent pending actions; never approve whichever global token happened to be minted last.
 
 Acceptance: approve stages/claims the selected action under the existing contract; decline stops visibly; CLI approval still works. Approval must be functional, not just a painted resolved row. Preserve current headless BLOCKED return; explicitly describe how an operator initiates any approved rerun/retry.
+Evidence: `.venv/bin/python -m pytest tests/test_pause_authority.py tests/test_privilege_ranking.py tests/test_pause_bus_opacity.py tests/test_pilot_board.py tests/test_finish_line.py tests/test_bus_schema.py -q` → 97 passed. `.venv/bin/python -m pytest tests/ --ignore=tests/battery -q` → 462 passed (interpreter 3.10.12, this worktree). Approve stages `operator_approval_token` and does not `claim_once`. Two unused shas: CLI without query is `ambiguous`; `accept-pause <sha>` stages A not B. Decline burns unused tokens (`by=operator`); miss is `not_found` without `by`. L0 `helix accept-pause` still exit 4. Retry: re-run `cosmic-cli do --session <id>` after staging; headless BLOCKED still exits 4, no auto-loop. Modal does not render `tok-`.
 
 ## Commit 7 — Dashboard normalization and documentation
 

@@ -451,6 +451,84 @@ class ApprovalManager:
         """One-shot validate+claim (exactly-once)."""
         return self.claim_once(token_id, current_action_sha256)
 
+    def peek_unused(self, action_sha256: str) -> Optional[str]:
+        """Return the unused unexpired token id for this action, or None.
+
+        Privileged: the id is the credential. Callers must not put it on the
+        bus, in widgets, or in model context. Does not consume.
+        """
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            now = time.time()
+            for tid, tok in self._tokens.items():
+                if tok.get("used"):
+                    continue
+                try:
+                    expiry = float(tok.get("expiry", 0))
+                except (TypeError, ValueError):
+                    continue
+                if now > expiry:
+                    continue
+                if tok.get("action_sha256") != action_sha256:
+                    continue
+                return tid
+            return None
+        finally:
+            self._unlock_file(fh)
+
+    def unused_action_shas(self) -> List[str]:
+        """Pending action bindings. Token ids are not included."""
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            now = time.time()
+            out: List[str] = []
+            seen = set()
+            for tok in self._tokens.values():
+                if tok.get("used"):
+                    continue
+                try:
+                    expiry = float(tok.get("expiry", 0))
+                except (TypeError, ValueError):
+                    continue
+                if now > expiry:
+                    continue
+                sha = tok.get("action_sha256")
+                if not isinstance(sha, str) or not sha or sha in seen:
+                    continue
+                seen.add(sha)
+                out.append(sha)
+            return out
+        finally:
+            self._unlock_file(fh)
+
+    def burn_unused(self, action_sha256: str) -> bool:
+        """Decline: mark unused matching tokens used without executing."""
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            now = time.time()
+            changed = False
+            for tok in self._tokens.values():
+                if tok.get("used"):
+                    continue
+                if tok.get("action_sha256") != action_sha256:
+                    continue
+                try:
+                    expiry = float(tok.get("expiry", 0))
+                except (TypeError, ValueError):
+                    continue
+                if now > expiry:
+                    continue
+                tok["used"] = True
+                changed = True
+            if changed:
+                self._persist_unlocked()
+            return changed
+        finally:
+            self._unlock_file(fh)
+
     def present_for_witness(self, decision: "PolicyDecision", action_input: str) -> dict:
         return {
             "disposition": decision.disposition.value,

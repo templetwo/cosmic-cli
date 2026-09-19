@@ -13,8 +13,13 @@ from textual.containers import Horizontal
 from textual.widgets import Button, DataTable, Footer, Input, RichLog, Static
 
 from cosmic_cli import __version__, theme
+from cosmic_cli.pause_authority import (
+    PauseHandle,
+    approve_pause,
+    decline_pause,
+)
 from cosmic_cli.tui import format as fmt
-from cosmic_cli.tui.state import BoardState, Mission, apply_event
+from cosmic_cli.tui.state import BoardState, Mission, PendingPause, apply_event
 from cosmic_cli.tui.widgets import (
     DiffPeek,
     DirectiveBar,
@@ -227,10 +232,10 @@ class PilotApp(App):
             pending.focus()
 
     def action_approve_pause(self) -> None:
-        return
+        self._decide_selected_pause("approved")
 
     def action_decline_pause(self) -> None:
-        return
+        self._decide_selected_pause("declined")
 
     def action_toggle_diff(self) -> None:
         peek = self._q("#diff_peek")
@@ -349,10 +354,150 @@ class PilotApp(App):
                 return
             self.board = apply_event(self.board, event)
             self._absorb_start_identity(event)
+            if event.get("event") == "gate.pause_minted":
+                self._on_pause_minted(event)
             if self._board_alive():
                 self._paint()
         except Exception:
             return
+
+    def _on_pause_minted(self, rec: dict) -> None:
+        try:
+            self.notify("PAUSE — operator approval required (token never shown)")
+        except Exception:
+            pass
+        if self.testing:
+            return
+        pause = self._pause_matching_event(rec)
+        if pause is None:
+            return
+        if not self._should_open_pause_modal(pause):
+            return
+        self._open_pause_modal(pause)
+
+    def _pause_matching_event(self, rec: dict) -> Optional[PendingPause]:
+        sha = rec.get("action_sha256")
+        pending_id = rec.get("pending_id")
+        mission = rec.get("mission")
+        for pause in self.board.pending_pauses:
+            if sha and pause.action_sha256 == sha:
+                return pause
+            if pending_id is not None and pause.pending_id == pending_id:
+                return pause
+            if mission and pause.mission_key == mission and pause.action_sha256:
+                return pause
+        return None
+
+    def _should_open_pause_modal(self, pause: PendingPause) -> bool:
+        if self.board.selected_key == pause.mission_key:
+            return True
+        return len(self.board.pending_pauses) == 1
+
+    def _selected_pause(self) -> Optional[PendingPause]:
+        selected = self.board.selected_key
+        keyed = [p for p in self.board.pending_pauses if p.mission_key == selected]
+        if len(keyed) == 1:
+            return keyed[0]
+        if keyed:
+            return keyed[0]
+        if len(self.board.pending_pauses) == 1:
+            return self.board.pending_pauses[0]
+        return None
+
+    def _pause_handle(self, pause: PendingPause) -> PauseHandle:
+        pending_id = pause.pending_id
+        if pending_id is not None and not isinstance(pending_id, int):
+            pending_id = None
+        return PauseHandle(
+            action_sha256=pause.action_sha256 or "",
+            action_summary=pause.action_summary,
+            mission_id=pause.mission_key,
+            pending_id=pending_id,
+            expires_at=pause.expires_at,
+            rule_id=pause.rule,
+        )
+
+    def _open_pause_modal(self, pause: PendingPause) -> None:
+        from cosmic_cli.tui.screens.pause import PauseApproveScreen
+
+        handle = self._pause_handle(pause)
+        if not handle.action_sha256:
+            return
+
+        def _done(choice: str | None) -> None:
+            self._apply_pause_choice(choice, handle)
+
+        self.push_screen(PauseApproveScreen(handle), _done)
+
+    def _decide_selected_pause(self, choice: str) -> None:
+        pause = self._selected_pause()
+        if pause is None:
+            return
+        self._apply_pause_choice(choice, self._pause_handle(pause))
+
+    def _approval_manager(self, handle: PauseHandle):
+        if handle.mission_id:
+            agent = self.agents_by_mission.get(handle.mission_id)
+            mgr = getattr(agent, "_approval_mgr", None) if agent is not None else None
+            if mgr is not None:
+                return mgr
+        return None
+
+    def _apply_pause_choice(self, choice: str | None, handle: PauseHandle) -> None:
+        if choice not in ("approved", "declined"):
+            return
+        mgr = self._approval_manager(handle)
+        kwargs = {"require_tty": not self.testing}
+        if mgr is not None:
+            kwargs["manager"] = mgr
+        if choice == "approved":
+            result = approve_pause(handle, **kwargs)
+        else:
+            result = decline_pause(handle, **kwargs)
+        agent = (
+            self.agents_by_mission.get(handle.mission_id)
+            if handle.mission_id
+            else None
+        )
+        emit = getattr(agent, "_emit_pause_resolved", None) if agent else None
+        if result.outcome == "approved":
+            if callable(emit) and handle.action_sha256:
+                emit(
+                    "approved",
+                    handle.action_summary,
+                    handle.action_sha256,
+                    by="operator",
+                    pending_id=handle.pending_id,
+                )
+            if agent is not None and result.approval_token_id:
+                agent.approval_token_id = result.approval_token_id
+            try:
+                self.notify(
+                    "staged one retry — re-run the blocked action "
+                    "(same session; consume on retry)"
+                )
+            except Exception:
+                pass
+        elif result.outcome == "declined":
+            if callable(emit) and handle.action_sha256:
+                emit(
+                    "declined",
+                    handle.action_summary,
+                    handle.action_sha256,
+                    by="operator",
+                    pending_id=handle.pending_id,
+                )
+            try:
+                self.notify("declined — mission stays blocked")
+            except Exception:
+                pass
+        else:
+            try:
+                self.notify(result.message or result.outcome, severity="error")
+            except Exception:
+                pass
+        if self._board_alive():
+            self._paint()
 
     def _absorb_start_identity(self, rec: dict) -> None:
         name = rec.get("event")

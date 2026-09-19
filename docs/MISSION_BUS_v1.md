@@ -33,23 +33,22 @@ and appends the same record to the mission JSONL.
 | `step.proposed` | Each model step: `n` (1-based), `action` (verb), `raw` (redacted), `head` (first line ≤120) |
 | `finish.declared` | Immediately before an accepted finish `mission.end`. status, finish_basis, synthesized, redacted text |
 | `mission.end` | Last execution event. status, optional finish_basis, steps, edited, warnings, outcome, model; `block_message` when blocked |
-| `compass.verdict` | On `[BLOCKED]` when the classification is known (OPEN/PAUSE/WITNESS) |
+| `compass.verdict` | Authoritative PAUSE/WITNESS at the gate; also on `[BLOCKED]` when the class is known. OPEN is not invented. |
+| `gate.pause_minted` | After `mint_token`: action_summary, action_sha256, optional expires_at / opaque pending_id. Never a token. |
+| `gate.pause_resolved` | `approved`+`by=operator` on successful `claim_once`, or TUI/CLI approve/decline. Failed claim is `invalid` without `by`. |
+| `fs.mutate` | After successful EDIT/WRITE/CREATE/MKDIR. Path, optional checkpoint/receipt. No diff body in this slice. |
+| `shell.exec` | SHELL/CODE/TEST. `exit_code` only from `[exit N]`; blocked is never 0. |
+| `verify.result` | Distinct `role` (`verify_cmd` / `auto_verify`). auto_verify cannot certify a mission. |
 
 `finish.declared` is omitted on blocked / passed / max_steps / error paths.
 
 ### Not emitted in this slice
 
-Schema names exist in `cosmic_cli/events.py` and the TUI reducer will accept
-them if they arrive. The agent does **not** yet write:
-
-- `gate.pause_minted` / `gate.pause_resolved` / `gate.receipt`
-- `fs.read` / `fs.mutate` / `fs.rollback`
-- `shell.exec` / `verify.result`
+- `gate.receipt`, `fs.read` / `fs.rollback`
 - `step.started` / `step.finished`
 - `pass.declared` / `review.completed` / `steer` / `mission.cancel`
 
-Those remain later slices. Do not treat their presence in the spec catalog as
-a claim they are on the tape.
+Approve stages `operator_approval_token` and does not `claim_once`. Consume is the retry. Concurrent pauses require an explicit `action_sha256`; `last_pause_token.json` is not the selector.
 
 ## Dual-write / compatibility
 
