@@ -115,6 +115,8 @@ _COMPASS_RULE_RE = re.compile(
     + r")\b(?:\s*\([^)]+\))?\s*:\s*([A-Za-z0-9_.-]+)"
 )
 _PAUSE_TOKEN_RE = re.compile(r"\btok-[0-9A-Fa-f]{16}\b")
+# Leading result marker from _run_shell / _run_code. Not UPG-001 process evidence.
+_EXIT_MARKER_RE = re.compile(r"^\[exit (\d+)\]")
 # Matches ApprovalManager.mint_token default; used only for bus expiry display.
 _PAUSE_TTL_SECONDS = 300
 
@@ -202,6 +204,27 @@ def _compass_payload_from_blocked(
         "rule_matched": _redact_pause_text(rule.group(1) if rule else ""),
         "reason": reason,
     }
+
+
+def _as_output_text(output: Any) -> str:
+    return output if isinstance(output, str) else "" if output is None else str(output)
+
+
+def _parse_exit_marker(output: Optional[str]) -> Optional[int]:
+    """Integer from a leading `[exit N]` marker. Otherwise None — never assume 0."""
+    head = _as_output_text(output).lstrip()
+    match = _EXIT_MARKER_RE.match(head)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _output_blocked(output: Optional[str]) -> bool:
+    return _as_output_text(output).lstrip().startswith("[BLOCKED]")
+
+
+def _mutation_ok(result: Any) -> bool:
+    return isinstance(result, tuple) and len(result) >= 2 and result[1] is True
 
 
 def _is_discovery_step(upper: str, next_step: str) -> bool:
@@ -439,6 +462,65 @@ class StargazerAgent:
             reason=_redact_pause_text(reason, extra_token),
         )
         self._compass_emitted_n = self.steps_taken
+
+    def _shell_evidence(self, output: Optional[str]) -> Dict[str, Any]:
+        text = _as_output_text(output)
+        blocked = _output_blocked(text)
+        # Blocked output must not be painted as exit 0.
+        exit_code = None if blocked else _parse_exit_marker(text)
+        return {
+            "exit_code": exit_code,
+            "blocked": blocked,
+            "output_head": text,
+        }
+
+    def _emit_shell_exec(self, *, kind: str, cmd: str, output: Optional[str]) -> None:
+        self._emit(
+            "shell.exec",
+            n=self.steps_taken,
+            kind=kind,
+            cmd=cmd,
+            **self._shell_evidence(output),
+        )
+
+    def _emit_verify_result(self, *, role: str, cmd: str, output: Optional[str]) -> None:
+        ev = self._shell_evidence(output)
+        self._emit(
+            "verify.result",
+            n=self.steps_taken,
+            cmd=cmd,
+            role=role,
+            ok=ev["exit_code"] == 0,
+            **ev,
+        )
+
+    def _emit_fs_mutate_if_ok(
+        self,
+        op: str,
+        path: str,
+        result: Any,
+        receipt: Any = None,
+    ) -> None:
+        if not _mutation_ok(result):
+            return
+        payload: Dict[str, Any] = {
+            "n": self.steps_taken,
+            "op": op,
+            "path": path,
+        }
+        payload["rel"] = path
+        try:
+            payload["abs"] = str((self.root / path).resolve())
+        except OSError:
+            pass
+        if receipt is not None:
+            ck = getattr(receipt, "checkpoint_id", None)
+            rid = getattr(receipt, "receipt_id", None)
+            if ck:
+                payload["checkpoint_id"] = ck
+            if rid:
+                payload["receipt_id"] = rid
+        self._emit("fs.mutate", **payload)
 
     def _load_echo_memory(self) -> List[Dict[str, Any]]:
         if not ECHO_FILE.exists():
@@ -780,6 +862,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 _do_edit,
                 expected_content=expected_post.encode("utf-8"),
                 match_input=f"EDIT {path}\n{old}\n{new}",
+                op="EDIT",
             )
             if isinstance(result, str):
                 return result
@@ -830,6 +913,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 _do_write,
                 expected_content=content.encode("utf-8"),
                 match_input=f"WRITE {path}\n{content}",
+                op="WRITE",
             )
             if isinstance(result, str):
                 return result
@@ -859,6 +943,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 path,
                 bind_mkdir(path=path),
                 _do_mkdir,
+                op="MKDIR",
             )
             if isinstance(result, str):
                 return result
@@ -891,6 +976,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 _do_create,
                 expected_content=content.encode("utf-8"),
                 match_input=f"CREATE {path}\n{content}",
+                op="CREATE",
             )
             if isinstance(result, str):
                 return result
@@ -930,12 +1016,16 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         if upper.startswith("SHELL:"):
             cmd = self._body_after(step, "SHELL:")
             self._log(f"SHELL {cmd}")
-            return self._run_shell(cmd)
+            output = self._run_shell(cmd)
+            self._emit_shell_exec(kind="SHELL", cmd=cmd, output=output)
+            return output
 
         if upper.startswith("CODE:"):
             code = self._body_after(step, "CODE:")
             self._log(f"CODE ({len(code)} chars)")
-            return self._run_code(code)
+            output = self._run_code(code)
+            self._emit_shell_exec(kind="CODE", cmd=code, output=output)
+            return output
 
         if upper.startswith("TEST:"):
             args = self._body_after(step, "TEST:") or "tests/ -q"
@@ -944,7 +1034,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             else:
                 cmd = args
             self._log(f"TEST {cmd}")
-            return self._run_shell(cmd)
+            output = self._run_shell(cmd)
+            self._emit_shell_exec(kind="TEST", cmd=cmd, output=output)
+            return output
 
         if upper.startswith("TODO:"):
             body = self._body_after(step, "TODO:")
@@ -1033,7 +1125,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         targets = " ".join(f'"{self.root / f}"' for f in uniq[-5:])
         cmd = f"python -m py_compile {targets}"
         self._log(f"auto-verify: {cmd}")
-        return self._run_shell(cmd)
+        out = self._run_shell(cmd)
+        self._emit_verify_result(role="auto_verify", cmd=cmd, output=out)
+        return out
 
     def _recover_from_failure(self, step: str, err: Exception) -> None:
         self._log(f"[error] {err}")
@@ -1217,6 +1311,11 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         # Gated shell path on purpose: compass + L0 floor apply
                         # to the verifier like any other SHELL. No bare subprocess.
                         vc = self._run_shell(self.verify_cmd) or ""
+                        self._emit_verify_result(
+                            role="verify_cmd",
+                            cmd=self.verify_cmd,
+                            output=vc,
+                        )
                         head = vc.lstrip()
                         if head.startswith("[exit 0]"):
                             basis = "verifier"
@@ -1516,6 +1615,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         *,
         expected_content: Optional[bytes] = None,
         match_input: Optional[str] = None,
+        op: str = "",
     ):
         """Authorize + execute mutation through gateway (checkpoint when available).
 
@@ -1524,8 +1624,11 @@ Do not READ .env, *.pem, id_rsa, or credential files.
 
         Returns executor result, or a [BLOCKED]/[Error] string.
         """
+        mutate_op = (op or action_type.value).upper()
         if self.exec_mode == "full":
-            return executor_fn()
+            result = executor_fn()
+            self._emit_fs_mutate_if_ok(mutate_op, path, result)
+            return result
 
         rules = self._load_policy_rules()
         if getattr(self, "_policy_load_error", None):
@@ -1552,7 +1655,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             )
             if receipt.checkpoint_manifest is not None:
                 since_ns = receipt.checkpoint_manifest.created_at_unix_ns
-            return self._gateway.execute_with_receipt(
+            result = self._gateway.execute_with_receipt(
                 receipt,
                 executor_fn,
                 observed_paths_fn=lambda: self._paths_touched_since(
@@ -1561,6 +1664,8 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 expected_content=expected_content,
                 verify_path=target if expected_content is not None else None,
             )
+            self._emit_fs_mutate_if_ok(mutate_op, path, result, receipt=receipt)
+            return result
         except PermissionError as e:
             msg = str(e)
             if "PAUSE" in msg and "token" in msg.lower():

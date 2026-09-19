@@ -88,14 +88,15 @@ Evidence: `.venv/bin/python -m pytest tests/test_pause_bus_opacity.py tests/test
 
 ## Commit 4 — High-value mutation, shell, and verifier events
 
-- [ ] Emit fs.mutate for successful EDIT/WRITE/CREATE through gateway/checkpoint: op, path, optional checkpoint_id/receipt_id.
-- [ ] Omit diff body initially or cap it at 8 KiB with truncation explicitly marked.
-- [ ] Emit shell.exec for SHELL/CODE/TEST: kind, redacted command, exit_code parsed only when present, blocked, output_head ≤500.
-- [ ] Emit verify.result for verify_cmd and auto_verify with distinct role values.
-- [ ] Never convert auto_verify success into mission verification.
-- [ ] Test successful mutation path emission and blocked shell output without false exit 0.
+- [x] Emit fs.mutate for successful EDIT/WRITE/CREATE through gateway/checkpoint: op, path, optional checkpoint_id/receipt_id.
+- [x] Omit diff body initially or cap it at 8 KiB with truncation explicitly marked.
+- [x] Emit shell.exec for SHELL/CODE/TEST: kind, redacted command, exit_code parsed only when present, blocked, output_head ≤500.
+- [x] Emit verify.result for verify_cmd and auto_verify with distinct role values.
+- [x] Never convert auto_verify success into mission verification.
+- [x] Test successful mutation path emission and blocked shell output without false exit 0.
 
 Parsing existing result markers is explicitly permitted for this slice. Do not present it as completion of UPG-001's stronger execution-evidence design.
+Evidence: `.venv/bin/python -m pytest tests/test_bus_mutate_shell.py tests/test_finish_line.py tests/test_pause_bus_opacity.py tests/test_bus_agent_emit.py -q` → 56 passed (17+26+6+7). `.venv/bin/python -m pytest tests/ --ignore=tests/battery -q` → 453 passed (interpreter 3.10.12, import path this worktree). Seams: `_run_mutation` after `execute_with_receipt` / full-mode executor (success tuple only); `_execute_step` after SHELL/CODE/TEST `_run_shell`/`_run_code` (stubs still emit); `_maybe_auto_verify` and FINISH `_run_shell(self.verify_cmd)` for `verify.result` roles `auto_verify` / `verify_cmd`. `_run_shell` return strings unchanged. Diff body omitted (no `diff` / `diff_truncated`). `exit_code` from leading `[exit N]` only; `[BLOCKED]` ⇒ `blocked=True` and `exit_code` null, never 0. `ok` true only when `exit_code==0`. auto_verify py_compile success does not set `mission.end` `verified` (synthesized + passing stub stays `needs_review` / `finish_basis=synthesized`). FINISH basis assignment unmoved. Not UPG-001. Battery not re-run. Not committed.
 
 ## Commit 5 — TUI layout and event-driven state
 
