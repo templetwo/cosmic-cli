@@ -74,15 +74,17 @@ Evidence: `.venv/bin/python -m pytest tests/test_finish_line.py tests/test_bus_s
 
 ## Commit 3 — PAUSE and compass hooks
 
-- [ ] Emit gate.pause_minted at the actual mint point with action_summary, action_sha256, expiry, optional pending_id, and only safe opaque correlation information.
-- [ ] Never emit a full token; supplied token_id_prefix is optional and at most 8 characters, and should be omitted if it exposes credential bytes.
-- [ ] Emit gate.pause_resolved for approval, decline, expiry, or invalidity using the defined actor/correlation semantics.
-- [ ] Emit OPEN/WITNESS/PAUSE compass verdicts where authoritative classification is available.
-- [ ] Prefer the agent seam that knows session/mission; keep gateway free of UI imports.
-- [ ] If needed, inject an optional gateway event callback defaulting to no-op.
-- [ ] Test mint opacity, exactly-once approval claim, and decline semantics matching existing CLI behavior.
+- [x] Emit gate.pause_minted at the actual mint point with action_summary, action_sha256, expiry, optional pending_id, and only safe opaque correlation information.
+- [x] Never emit a full token; supplied token_id_prefix is optional and at most 8 characters, and should be omitted if it exposes credential bytes.
+- [x] Emit gate.pause_resolved for approval, decline, expiry, or invalidity using the defined actor/correlation semantics.
+- [x] Emit OPEN/WITNESS/PAUSE compass verdicts where authoritative classification is available.
+- [x] Prefer the agent seam that knows session/mission; keep gateway free of UI imports.
+- [x] If needed, inject an optional gateway event callback defaulting to no-op. (Not needed: agent emits; gateway stays UI-free.)
+- [x] Test mint opacity and exactly-once approval claim.
+- [ ] Decline semantics matching existing CLI behavior — deferred to commit 6; decline does not exist yet and was not faked.
 
 Acceptance: `helix accept-pause` remains compatible and applicable gate/battery tests retain their expected results. Automatically expired/invalid records must not falsely claim an operator decision.
+Evidence: `.venv/bin/python -m pytest tests/test_pause_bus_opacity.py tests/test_local_policy_gate.py tests/test_finish_line.py tests/test_bus_agent_emit.py tests/test_bus_schema.py -q` → 69 passed (6+8+26+7+22). `.venv/bin/python -m pytest tests/ --ignore=tests/battery -q` → 425 passed (interpreter 3.10.12, import path this worktree). Mint seams: `_run_mutation`, local `_compass_gate` PAUSE, Helix PAUSE. Local mint payload keys: `v, event, ts, session, mission, seq, action_summary, action_sha256, expires_at` (no `token` / `token_id_prefix` / `pending_id`). `claim_once` True → `gate.pause_resolved` `decision=approved` `by=operator`; failed claim → `invalid` without `by` (expired not distinguishable without new ApprovalManager API). Decline not emitted (commit 6; not faked). Authoritative `compass.verdict` PAUSE/WITNESS at the gate; OPEN is allow-through and is not invented. Gateway `on_event` skipped; agent emits. Battery not re-run.
 
 ## Commit 4 — High-value mutation, shell, and verifier events
 
@@ -128,13 +130,16 @@ Acceptance: approve stages/claims the selected action under the existing contrac
 
 ## Commit 7 — Dashboard normalization and documentation
 
-- [ ] Normalize legacy and namespaced lifecycle/step events in dashboard readers.
-- [ ] Prefer step.proposed.head; fall back to legacy action.
-- [ ] Read basis from end or mission.end; old records without v remain readable.
-- [ ] Avoid duplicate steps/end rollups from compatibility aliases.
-- [ ] Document the implemented Phase-1 event subset and compatibility policy in `docs/MISSION_BUS_v1.md` or the README, linking the broader draft specification.
-- [ ] Document TUI PAUSE bindings in COSMIC.md or a pilot note.
+- [x] Normalize legacy and namespaced lifecycle/step events in dashboard readers.
+- [x] Prefer step.proposed.head; fall back to legacy action.
+- [x] Read basis from end or mission.end; old records without v remain readable.
+- [x] Avoid duplicate steps/end rollups from compatibility aliases.
+- [x] Document the implemented Phase-1 event subset and compatibility policy in `docs/MISSION_BUS_v1.md` or the README, linking the broader draft specification.
+- [x] Document TUI PAUSE bindings in COSMIC.md or a pilot note.
 - [ ] Manually verify dashboard `/api/state` using an isolated fixture and `dashboard --no-open`.
+
+Acceptance: isolated JSONL/echo readers; `complete` stays `complete`; no live echo/chronicle reads.
+Evidence: `.venv/bin/python -m pytest tests/test_dashboard_normalize.py tests/test_finish_line.py tests/test_board_state.py -q` → 50 passed (12+26+12). `.venv/bin/python -m pytest tests/ --ignore=tests/battery -q` → 425 passed (interpreter 3.10.12, import path this worktree). `session_step_rows` / `session_terminal` / `mission_counts` use `iter_canonical` + `normalize_legacy` + `is_compat_alias`; dual-write aliases collapse to one step; old records without `v` remain readable; finish_basis is never invented. Live `dashboard --no-open` / `/api/state` not invoked (would open operator `chronicle.db`). Echo tiles still status/directive/model/steps; optional `finish_basis` in meta is HTML-escaped.
 
 ## Cross-cutting checks
 

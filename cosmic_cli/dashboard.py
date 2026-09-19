@@ -23,6 +23,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from cosmic_cli.events import (
+    is_compat_alias,
+    iter_canonical,
+    normalize_legacy,
+    tape_identity,
+)
+
 DB = Path.home() / ".claude/plugins/data/t2helix-templetwo-t2helix/chronicle.db"
 ECHO = Path.home() / ".cosmic_echo.jsonl"
 SESSIONS = Path.home() / ".cosmic-cli/sessions"
@@ -50,15 +57,69 @@ def tail_jsonl(path, n):
     return out
 
 
+def session_file_stamp(path):
+    """Session prefix of a mission stem filename, truncated to 8 chars."""
+    return Path(path).name.split("__")[0][:8]
+
+
+def session_step_rows(records, file_stamp=""):
+    """Canonical step.proposed rows; aliases and non-steps dropped.
+
+    Dual-write `step.proposed` + `step` (compat/alias_of, or same mission+seq)
+    collapse to one row. Prefer `head`, else legacy `action`. Lifecycle events
+    (start/end/mission.start/mission.end/finish.declared) are not steps.
+    Never invents finish_basis.
+    """
+    rows = []
+    seen = set()
+    for rec in iter_canonical(records):
+        if rec.get("event") != "step.proposed":
+            continue
+        ident = tape_identity(rec)
+        if ident[1] is not None:
+            if ident in seen:
+                continue
+            seen.add(ident)
+        row = dict(rec)
+        if not row.get("head"):
+            action = row.get("action")
+            row["head"] = str(action) if action is not None else ""
+        if file_stamp:
+            row["_file"] = file_stamp
+        rows.append(row)
+    return rows
+
+
+def session_terminal(records):
+    """Last mission.end after alias drop. Never invents finish_basis.
+
+    Reads `end` or `mission.end`. `complete` stays `complete`.
+    """
+    end = None
+    for raw in records:
+        if is_compat_alias(raw):
+            continue
+        rec = normalize_legacy(raw)
+        if rec.get("event") == "mission.end":
+            end = rec
+    if end is None:
+        return None
+    out = {"status": end.get("status")}
+    if "finish_basis" in end:
+        out["finish_basis"] = end["finish_basis"]
+    return out
+
+
 def session_steps(n_files=3, n_steps=20):
     if not SESSIONS.is_dir():
         return []
     files = sorted(SESSIONS.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)[-n_files:]
     steps = []
+    # Dual-write roughly doubles JSONL density; tail extra lines then filter.
+    tail_n = max(40, n_steps * 4)
     for f in files:
-        for e in tail_jsonl(f, 40):
-            e["_file"] = f.name.split("__")[0][:8]
-            steps.append(e)
+        stamp = session_file_stamp(f)
+        steps.extend(session_step_rows(tail_jsonl(f, tail_n), file_stamp=stamp))
     return steps[-n_steps:]
 
 
@@ -280,7 +341,7 @@ async function tick() {
 
   document.getElementById('missions').innerHTML = s.missions.map(m => `
     <div class="row">${chip(m.status)} ${esc(m.directive||'').slice(0,120)}
-      <div class="meta">${esc(m.model||'')} · ${m.steps ?? '?'} steps</div></div>`).join('');
+      <div class="meta">${esc(m.model||'')} · ${m.steps ?? '?'} steps${m.finish_basis ? ' · '+esc(m.finish_basis) : ''}</div></div>`).join('');
 
   firstPaint = false;
 }

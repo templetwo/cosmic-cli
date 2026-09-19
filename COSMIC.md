@@ -28,3 +28,21 @@ SHELL · CODE · TEST · TODO · PASS · FINISH
 - **Residual:** what was not verified
 
 Prefer local reversible work. No force-push, no drive-by refactors.
+
+## Pilot Board PAUSE (operator)
+
+The TUI never shows an approval token. Bindings hold even if the approval
+modal lands later:
+
+| Key | Action |
+| --- | --- |
+| `p` | Focus pending gates |
+| `y` | Approve — only while the approval modal is focused |
+| `n` | Decline — only while the approval modal is focused |
+| Esc | Dismiss the modal without approving |
+
+`y`/`n` do not approve whichever token was minted last. The token body is
+never rendered, logged, placed on the bus, or given to the model.
+
+Headless path: `cosmic-cli helix accept-pause` (L2 TTY, one approved retry).
+Decline leaves the mission blocked; the model cannot remint its own retry.
