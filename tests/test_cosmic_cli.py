@@ -134,7 +134,6 @@ class TestStargazerAgent:
         ):
             result = agent.execute()
         # The model never said FINISH; the harness wrote one to stop the loop.
-        # Before the finish-line split this asserted status == "complete".
         assert result["status"] == "needs_review"
         assert result["finish_basis"] == "synthesized"
         assert result["results"][-1]["step"] == "FINISH"

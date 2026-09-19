@@ -186,6 +186,10 @@ A mission that reaches FINISH ends in one of two statuses. There is no
 
 - `verified` proves only the check that ran. It is not a claim that the code is
   correct or safe to merge.
+- `finish_basis` is persisted with the status: in the echo record, the session
+  log's `end` event, and the Helix receipt (tag `finish_basis:<basis>`), and it
+  is shown on the status line as `needs_review (synthesized)`. A mission that
+  never reached the finish line carries no `finish_basis` key.
 - A FINISH the harness synthesizes is never `verified`, even with a passing
   verifier: the model did not declare it, and no actor approves its own level.
 - The verifier runs through the same gated shell as any `SHELL` step (compass +

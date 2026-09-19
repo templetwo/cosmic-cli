@@ -59,11 +59,8 @@ CONTEXT_MEMORY_CAP = 16
 CONTEXT_CHARS_CAP = 28_000
 FILE_TREE_LINES_CAP = 120
 
-# The finish line. A mission that reaches the FINISH path ends in exactly one
-# of these. "verified" means an operator-supplied verifier exited 0 on a FINISH
-# the model itself declared — it proves only the check it ran. Everything else
-# that finishes is "needs_review". There is no "complete": that word covered a
-# syntax-checked finish, an unchecked finish, and a harness-synthesized finish.
+# A mission that reaches the FINISH path ends in exactly one of these.
+# "verified" proves only the check the operator's verifier ran.
 FINISHED_STATUSES = ("verified", "needs_review")
 
 STEP_PREFIXES = (
@@ -255,7 +252,9 @@ class StargazerAgent:
                     continue
         return out
 
-    def _append_echo(self, outcome: str, status: str) -> None:
+    def _append_echo(
+        self, outcome: str, status: str, finish_basis: Optional[str] = None
+    ) -> None:
         if not self.write_echo:
             return
         entry = {
@@ -267,6 +266,10 @@ class StargazerAgent:
             "edited": list(self.files_edited),
             "session": self.session_id,
         }
+        # Only a mission that reached the finish line has a basis; no null
+        # placeholder on the others.
+        if finish_basis:
+            entry["finish_basis"] = finish_basis
         try:
             with open(ECHO_FILE, "a", encoding="utf-8") as f:
                 json.dump(entry, f, ensure_ascii=False)
@@ -277,8 +280,12 @@ class StargazerAgent:
         # Helix chronicle (local memory substrate)
         if self.use_helix and helix_bridge is not None:
             try:
+                verdict = f"{status}:{finish_basis}" if finish_basis else status
+                tags = ["source:cosmic-cli", f"status:{status}", f"model:{self.model}"]
+                if finish_basis:
+                    tags.append(f"finish_basis:{finish_basis}")
                 content = (
-                    f"COSMIC mission [{status}] session={self.session_id}\n"
+                    f"COSMIC mission [{verdict}] session={self.session_id}\n"
                     f"directive: {self.directive}\n"
                     f"edited: {', '.join(self.files_edited) or '(none)'}\n"
                     f"outcome: {redact(str(outcome)[:1500])}"
@@ -287,7 +294,7 @@ class StargazerAgent:
                     content,
                     session_id=self.session_id,
                     domain="cosmic-cli",
-                    tags=["source:cosmic-cli", f"status:{status}", f"model:{self.model}"],
+                    tags=tags,
                     intensity=0.7 if status == "verified" else 0.5,
                 )
             except Exception as e:  # pragma: no cover
@@ -980,10 +987,8 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         if progress is not None and task is not None:
                             progress.update(task, advance=1)
                         continue
-                    # The finish line. py_compile above is a syntax check, not a
-                    # verdict. The verdict comes from the operator's verifier, and
-                    # only on a FINISH the model itself declared: a FINISH the
-                    # harness wrote for a looping model is never verified.
+                    # py_compile above is a syntax check, not a verdict. A FINISH
+                    # the harness wrote for a looping model is never verified.
                     basis = "synthesized" if finish_synthesized else "model_declared"
                     verifier_note = ""
                     if self.verify_cmd and not finish_synthesized:
@@ -1123,17 +1128,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             if final_result["results"]
             else "no steps"
         )
-        self._append_echo(str(last), final_result["status"])
-        self._session_write(
-            {
-                "event": "end",
-                "status": final_result["status"],
-                "edited": final_result["edited"],
-                "model": self.model,
-                "steps": self.steps_taken,
-                "warnings": final_result["warnings"],
-            }
-        )
+        basis = final_result.get("finish_basis")
+        self._append_echo(str(last), final_result["status"], basis)
+        end_event = {
+            "event": "end",
+            "status": final_result["status"],
+            "edited": final_result["edited"],
+            "model": self.model,
+            "steps": self.steps_taken,
+            "warnings": final_result["warnings"],
+        }
+        if basis:
+            end_event["finish_basis"] = basis
+        self._session_write(end_event)
         return final_result
 
     def _synthesize_finish(self) -> str:

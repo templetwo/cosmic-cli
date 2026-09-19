@@ -453,6 +453,13 @@ def dashboard_cmd(port: int, no_open: bool) -> None:
         subprocess.run(["open", url], check=False)
 
 
+def status_label(result: Dict[str, Any]) -> str:
+    """Status as shown to the operator: a finished mission names its basis."""
+    status = result.get("status", "?")
+    basis = result.get("finish_basis")
+    return f"{status} ({basis})" if basis else status
+
+
 def _run_stargazer(
     directive: str,
     *,
@@ -552,7 +559,7 @@ def _run_stargazer(
         "blocked": "red",
     }.get(status, "white")
     console.print(
-        f"[{color}]{status}[/{color}]  "
+        f"[{color}]{status_label(result)}[/{color}]  "
         f"[dim]session {result.get('session')} · {result.get('steps_taken', '?')} steps[/dim]"
     )
     if status == "blocked" and result.get("block_message"):

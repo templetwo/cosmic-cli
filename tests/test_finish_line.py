@@ -26,13 +26,13 @@ from cosmic_cli.agents import FINISHED_STATUSES, StargazerAgent
 
 def make_agent(directive="count lines only", **kw):
     kw.setdefault("max_steps", 6)
+    kw.setdefault("write_echo", False)
+    kw.setdefault("use_helix", False)
     return StargazerAgent(
         directive,
         api_key="test_key",
         quiet=True,
         show_progress=False,
-        write_echo=False,
-        use_helix=False,
         **kw,
     )
 
@@ -135,6 +135,78 @@ class TestRedaction:
         finish_text = result["results"][-1]["result"]
         assert "could not run" in finish_text
         assert fake not in finish_text
+
+
+class TestPersistence:
+    """Why a mission finished must outlive the process (second-seat review).
+
+    A reader after the fact sees only echo, the session log, and Helix. If the
+    basis is dropped there, needs_review cannot be told apart: a looping model,
+    a declared finish nobody checked, and a gated verifier all look the same.
+    """
+
+    def _echo_rows(self, tmp_path, monkeypatch, steps, **kw):
+        import json
+
+        echo = tmp_path / "echo.jsonl"
+        monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", echo)
+        monkeypatch.setattr("cosmic_cli.agents.SESSION_DIR", tmp_path / "sessions")
+        agent = make_agent(write_echo=True, **kw)
+        result, _ = run(agent, steps)
+        rows = [json.loads(ln) for ln in echo.read_text().splitlines() if ln.strip()]
+        events = [
+            json.loads(ln)
+            for ln in agent.session_path.read_text().splitlines()
+            if ln.strip()
+        ]
+        return result, rows, events
+
+    def test_echo_record_carries_the_basis(self, tmp_path, monkeypatch):
+        _, rows, _ = self._echo_rows(tmp_path, monkeypatch, itertools.repeat("READ: f.py"))
+        assert rows[-1]["status"] == "needs_review"
+        assert rows[-1]["finish_basis"] == "synthesized"
+
+    def test_session_end_event_carries_the_basis(self, tmp_path, monkeypatch):
+        _, _, events = self._echo_rows(tmp_path, monkeypatch, ["FINISH: done"])
+        end = [e for e in events if e.get("event") == "end"][-1]
+        assert end["status"] == "needs_review"
+        assert end["finish_basis"] == "model_declared"
+
+    def test_unfinished_mission_has_no_basis_key(self, tmp_path, monkeypatch):
+        # max_steps never reached the finish line: no basis to report, and no
+        # null placeholder pretending there is one.
+        steps = (f"READ: f{i}.py" for i in itertools.count())
+        _, rows, events = self._echo_rows(tmp_path, monkeypatch, steps, max_steps=2)
+        assert rows[-1]["status"] == "max_steps"
+        assert "finish_basis" not in rows[-1]
+        end = [e for e in events if e.get("event") == "end"][-1]
+        assert "finish_basis" not in end
+
+    def test_helix_receipt_carries_the_basis(self, tmp_path, monkeypatch):
+        import cosmic_cli.agents as agents_module
+
+        monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", tmp_path / "echo.jsonl")
+        monkeypatch.setattr("cosmic_cli.agents.SESSION_DIR", tmp_path / "sessions")
+        agent = make_agent(write_echo=True)
+        agent.use_helix = True
+        with patch.object(agents_module.helix_bridge, "record") as rec:
+            run(agent, ["FINISH: done"])
+        assert rec.called
+        kwargs = rec.call_args.kwargs
+        assert "finish_basis:model_declared" in kwargs["tags"]
+        assert "model_declared" in rec.call_args.args[0]
+
+    def test_cli_status_label_names_the_basis(self):
+        from cosmic_cli.main import status_label
+
+        assert (
+            status_label({"status": "needs_review", "finish_basis": "synthesized"})
+            == "needs_review (synthesized)"
+        )
+        assert status_label({"status": "verified", "finish_basis": "verifier"}) == (
+            "verified (verifier)"
+        )
+        assert status_label({"status": "blocked"}) == "blocked"
 
 
 class TestConsumers:
