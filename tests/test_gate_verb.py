@@ -360,6 +360,213 @@ def test_sensitive_write_refused(ws, capsys, monkeypatch):
     assert out == "" and "sensitive-path" in err
 
 
+# ---- CC-006: a READ tool's command-shaped keys need a command-shaped scan ----
+#
+# get_command_or_subagent_output is in _READ, and names its target with
+# "output_file"/"command". classify() put those in the READ corpus but decide()'s
+# sensitive-path check only ever extracted the four path-shaped keys, so the
+# check received "" and was skipped entirely; action_type was READ, not SHELL, so
+# check_shell never ran either. Net: OPEN, unconditionally.
+#
+# The naive repair — adding the two keys to decide()'s path list — does not hold:
+# "command" carries a whole shell command string, and
+# Path("cat ~/.cosmic-cli/approvals.json").expanduser().resolve() is ONE nonsense
+# filename, so the approval-store containment test cannot match it.
+
+CC006_REPORTED = "cat ~/.cosmic-cli/approvals.json"
+
+
+def test_cc006_task_output_reader_cannot_read_the_approval_store(
+    ws, capsys, monkeypatch
+):
+    """The exact reported payload. Was OPEN; must DENY."""
+    code, out, err = _run(
+        _env("get_command_or_subagent_output", command=CC006_REPORTED),
+        capsys, monkeypatch, ws,
+    )
+    assert out == "", f"CC-006 bypass still OPEN: {err!r}"
+    assert "privilege ranking" in err and "approval surface" in err
+
+
+def test_cc006_bypass_also_denies_through_the_use_tool_bridge(
+    ws, capsys, monkeypatch
+):
+    """CC-005's bridge must not re-launder the CC-006 shape either."""
+    code, out, err = _run(
+        _env("use_tool",
+             tool_name="get_command_or_subagent_output",
+             tool_input={"command": CC006_REPORTED}),
+        capsys, monkeypatch, ws,
+    )
+    assert out == "", f"wrapped CC-006 bypass still OPEN: {err!r}"
+    assert "privilege ranking" in err
+
+
+@pytest.mark.parametrize("inp", [
+    {"command": CC006_REPORTED},
+    {"command": "cat ~/.cosmic-cli/last_pause_token.json"},
+    {"command": "cosmic-cli helix show-pause-token"},
+    {"command": "cosmic-cli helix accept-pause"},
+    {"command": "cat local_approvals.json"},
+    {"command": "echo YWNjZXB0LXBhdXNl | base64 -d"},   # opaque wrapper
+    {"output_file": "~/.cosmic-cli/exfil.txt"},
+    {"output_file": "/tmp/last_pause_token.json"},
+    # a second key present must not shadow the dangerous one
+    {"session_id": "sub-7", "command": CC006_REPORTED},
+])
+def test_cc006_command_shaped_read_keys_reach_the_approval_scan(
+    ws, capsys, monkeypatch, inp
+):
+    code, out, err = _run(
+        _env("get_command_or_subagent_output", **inp), capsys, monkeypatch, ws
+    )
+    assert out == "", f"command-shaped READ key escaped the scan: {inp!r} {err!r}"
+
+
+def test_cc006_command_shaped_key_holding_a_bare_sensitive_path_denies(
+    ws, capsys, monkeypatch
+):
+    """A whitespace-free value under output_file IS a path — scan it as one."""
+    code, out, err = _run(
+        _env("get_command_or_subagent_output", output_file="~/.ssh/id_rsa"),
+        capsys, monkeypatch, ws,
+    )
+    assert out == "" and "sensitive-path" in err
+
+
+@pytest.mark.parametrize("inp", [
+    {"command": "npm test"},
+    {"command": "pytest tests/ -q"},
+    {"command": "git status --short"},
+    {"command": "python3 -c 'print(1)'"},
+    {"command": "grep -n 'open(' cosmic_cli/gate.py"},
+    {"command": "bash-42"},                       # a session/command id, not a path
+    {"session_id": "sub-agent-7"},
+    {"output_file": "/tmp/build.log"},
+    {"output_file": "logs/run-42.txt"},
+    {"command": "git status --short", "output_file": "/tmp/status.txt"},
+])
+def test_cc006_legitimate_task_output_reads_still_open(
+    ws, capsys, monkeypatch, inp
+):
+    """The fix must not cost the tool its actual job."""
+    code, out, err = _run(
+        _env("get_command_or_subagent_output", **inp), capsys, monkeypatch, ws
+    )
+    assert out.strip() == SENTINEL, f"benign task-output read denied: {inp!r} {err!r}"
+
+
+@pytest.mark.parametrize("inp,expect_open", [
+    ({"path": "README.md"}, True),
+    ({"file_path": "cosmic_cli/gate.py"}, True),
+    ({"target_file": "docs/index.md"}, True),
+    ({"path": "~/.ssh/id_rsa"}, False),
+    ({"file_path": "~/.cosmic-cli/last_pause_token.json"}, False),
+    ({"target_file": ".env"}, False),
+])
+def test_cc006_path_shaped_keys_are_unchanged(
+    ws, capsys, monkeypatch, inp, expect_open
+):
+    """Path-shaped keys are genuine bare paths and were already correct.
+
+    Pinned on BOTH sides so the CC-006 split cannot quietly move them.
+    """
+    code, out, err = _run(_env("read_file", **inp), capsys, monkeypatch, ws)
+    if expect_open:
+        assert out.strip() == SENTINEL, f"path-shaped READ regressed: {inp!r} {err!r}"
+    else:
+        assert out == "" and "sensitive-path" in err
+
+
+@pytest.mark.parametrize("command", [
+    CC006_REPORTED,
+    "cosmic-cli helix show-pause-token",
+    "npm test",
+    "git status --short",
+])
+def test_cc006_read_command_verdict_matches_the_shell_verdict(
+    ws, capsys, monkeypatch, command
+):
+    """The point of the fix: an identical string cannot buy a weaker verdict by
+    riding a READ-classified task-output reader instead of Bash."""
+    _, shell_out, _ = _run(
+        _env("run_terminal_command", command=command), capsys, monkeypatch, ws
+    )
+    _, read_out, _ = _run(
+        _env("get_command_or_subagent_output", command=command),
+        capsys, monkeypatch, ws,
+    )
+    assert bool(shell_out) == bool(read_out), (
+        f"SHELL/READ verdict split on {command!r}: "
+        f"shell={'OPEN' if shell_out else 'DENY'} "
+        f"read={'OPEN' if read_out else 'DENY'}"
+    )
+
+
+# ---- CC-007: file I/O inside a visible interpreter payload is nested-opaque ----
+
+
+def _chr_built_token_store_read() -> str:
+    """python3 -c that assembles the token-store path from chr() at runtime.
+
+    Nothing in the returned command spells ``.cosmic-cli`` (or any other DiD
+    substring), and it reads the file with a plain ``open(...).read()``.
+    Built here rather than written as a literal so the evasion property is a
+    fact about the string, not a claim in a comment.
+    """
+    target = "/.cosmic-cli/last_pause_token.json"
+    chrs = "+".join(f"chr({ord(c)})" for c in target)
+    return (
+        "python3 -c 'import os;"
+        f"p=os.path.expanduser(chr(126))+{chrs};"
+        "print(open(p).read())'"
+    )
+
+
+def test_cc007_chr_built_open_payload_denies(ws, capsys, monkeypatch):
+    payload = _chr_built_token_store_read()
+    assert ".cosmic-cli" not in payload, "premise broken: literal is visible"
+    assert "last_pause_token" not in payload
+    code, out, err = _run(
+        _env("run_terminal_command", command=payload), capsys, monkeypatch, ws
+    )
+    assert out == "", f"CC-007 bypass still OPEN: {err!r}"
+    assert "opaque" in err.lower() or "privilege ranking" in err.lower()
+
+
+@pytest.mark.parametrize("payload", [
+    "python3 -c \"import pathlib; d='.cosmic'; e='-cli'; f=d+e; "
+    "p=pathlib.Path.home()/f/'approvals.json'; print(open(str(p)).read())\"",
+    "python3 -c \"import pathlib; d='.cos'; print((pathlib.Path.home()/d).read_text())\"",
+    "python3 -c \"import pathlib; print(pathlib.Path('x').read_bytes())\"",
+    "python3 -c \"import io; print(io.open('/etc/passwd').read())\"",
+    "bash -c \"python3 -c 'print(open(\\\"/etc/passwd\\\").read())'\"",
+])
+def test_cc007_nested_file_io_denies(ws, capsys, monkeypatch, payload):
+    code, out, err = _run(
+        _env("run_terminal_command", command=payload), capsys, monkeypatch, ws
+    )
+    assert out == "", f"nested file I/O escaped the interpreter check: {payload!r}"
+
+
+@pytest.mark.parametrize("payload", [
+    "python3 -c 'print(1)'",
+    "bash -c 'ls -la'",
+    "python3 -c \"import json; print(json.dumps({'a': 1}))\"",
+    "node -e 'console.log(2+2)'",
+    "python3 scripts/build.py",            # no -c: open() inside the FILE is fine
+    "grep -n 'open(' cosmic_cli/gate.py",  # no interpreter entrypoint at all
+    "python3 -c \"import os; print(os.popen)\"",  # popen attr must not match \bopen(
+])
+def test_cc007_ordinary_one_liners_still_open(ws, capsys, monkeypatch, payload):
+    """Visible interpreter payloads are the supported engineering path; the
+    CC-007 tightening must not swallow them."""
+    code, out, err = _run(
+        _env("run_terminal_command", command=payload), capsys, monkeypatch, ws
+    )
+    assert out.strip() == SENTINEL, f"benign one-liner denied: {payload!r} {err!r}"
+
+
 # ---- wrapper contract ----
 
 def test_verb_check_exit0_no_stdout(ws, capsys, monkeypatch):

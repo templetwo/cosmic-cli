@@ -80,6 +80,16 @@ _INTERPRETER_C = re.compile(
 
 # Inside a -c/-e payload these make the action effectively opaque or a
 # self-approval door; keep fail-closed when combined with an interpreter entry.
+#
+# Direct file I/O belongs here for the same reason os.system does (CC-007). The
+# check exists because an interpreter payload can act on the filesystem in a way
+# the DiD substring scan cannot see into, and a payload that assembles its
+# target at runtime — chr(46)+chr(99)+chr(111)+… — never spells ".cosmic-cli"
+# anywhere in the command text, so the approval-surface substrings below (and
+# every other DiD pattern) match nothing. open() is exactly as capable of
+# exfiltrating the token store as subprocess.run() is, so it fails closed the
+# same way. `\bopen\s*\(` covers bare open(, io.open( and p.open(); the word
+# boundary keeps it OFF os.popen(, which process.popen already handles above.
 _NESTED_OPAQUE_IN_INTERPRETER = re.compile(
     r"("
     r"os\.system\s*\(|"
@@ -90,6 +100,9 @@ _NESTED_OPAQUE_IN_INTERPRETER = re.compile(
     r"__import__\s*\(|"
     r"commands\.getoutput|"
     r"process\.popen|"
+    r"\bopen\s*\(|"
+    r"\.read_text\s*\(|"
+    r"\.read_bytes\s*\(|"
     r"accept-pause|show-pause-token|last_pause_token|"
     r"local_approvals|COSMIC_APPROVAL_TOKEN|\.cosmic-cli/"
     r")",

@@ -32,6 +32,7 @@ from typing import Optional, Tuple
 
 from cosmic_cli.gateway import ApprovalManager
 from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
+from cosmic_cli.ranking import touches_approval_surface
 from cosmic_cli.rules import load_rules_from_markdown
 from cosmic_cli.secrets import is_sensitive_path
 from cosmic_cli.shell_guard import check_shell
@@ -80,6 +81,25 @@ _INERT = {
 # bridge call naming one of these IS that call, and must be gated as that call
 # (see _unwrap_bridge).
 _KNOWN_LOCAL = _SHELL | _MUTATE | _READ | _INERT
+
+# A READ tool's argument surface has TWO shapes, and they are not interchangeable.
+#
+#   path-shaped     "path"/"file_path"/"filePath"/"target_file" — one bare
+#                   filesystem path. Scan it as a path: is_sensitive_path +
+#                   resolved containment under the approval store.
+#   command-shaped  "output_file"/"command" — what the task-output readers
+#                   (get_command_or_subagent_output) name their target with.
+#                   "command" holds a WHOLE SHELL COMMAND STRING.
+#
+# Scanning command-shaped text with the path-shaped scanner silently misses:
+# Path("cat ~/.cosmic-cli/approvals.json").expanduser().resolve() is ONE
+# nonsense filename under the cwd, so `store in target.parents` is False and
+# the approval-store refusal never fires (CC-006). Command-shaped text gets the
+# scan the SHELL class gets — the same touches_approval_surface check_shell
+# calls — so a task-output reader cannot reach an approval surface that the
+# byte-identical string would be denied for under Bash.
+_PATH_SHAPED_KEYS = ("path", "file_path", "filePath", "target_file")
+_COMMAND_SHAPED_KEYS = ("output_file", "command")
 
 # The bridge nests one call inside another. A bridge nested inside a bridge has
 # no legitimate cockpit shape; unwrap a couple of levels defensively and DENY
@@ -206,13 +226,14 @@ def classify(tool_name: str, tool_input: dict) -> Tuple[str, ActionType | None, 
         )
         return ("gate", ActionType.WRITE, f"{path}\n{body}")
     if tool_name in _READ:
+        # Same key order as before: path-shaped first, then the task-output
+        # readers' command-shaped keys. This corpus feeds evaluate_rules; which
+        # SHAPE the value has is re-derived in decide(), which needs to pick a
+        # matching scanner and cannot do that from the corpus string alone.
         return (
             "gate",
             ActionType.READ,
-            _extract(
-                tool_input, "path", "file_path", "filePath", "target_file",
-                "output_file", "command",  # task-output readers
-            ),
+            _extract(tool_input, *_PATH_SHAPED_KEYS, *_COMMAND_SHAPED_KEYS),
         )
     # use_tool wrapping a name this classifier does NOT know: a genuine external
     # MCP server__tool, which is what the bridge exists for. Gate as NETWORK
@@ -275,16 +296,39 @@ def decide(envelope: dict, rules, exec_mode: str = "safe") -> Optional[str]:
         raise _Deny(f"deny-by-default: unclassified/MCP tool {eff_name!r}")
 
     # Sensitive-path refusal for the read/write classes (unification table).
+    # Path-shaped keys only — these genuinely hold one bare path.
     if action_type in (ActionType.READ, ActionType.WRITE):
-        path = _extract(
-            eff_input, "path", "file_path", "filePath", "target_file"
-        )
+        path = _extract(eff_input, *_PATH_SHAPED_KEYS)
         if path and (
             is_sensitive_path(path)
             or is_sensitive_path(Path(path).name)
             or _is_under_approval_store(path)
         ):
             raise _Deny(f"sensitive-path {action_type.value} refused")
+
+    # Command-shaped READ keys get command-shaped scanning (CC-006). Every key
+    # present is scanned, not just the first non-empty one _extract would pick,
+    # because a second key is not a fallback here — it is a second argument the
+    # tool acts on.
+    if action_type is ActionType.READ:
+        for key in _COMMAND_SHAPED_KEYS:
+            blob = eff_input.get(key)
+            if not isinstance(blob, str) or not blob:
+                continue
+            ranked = touches_approval_surface(blob)
+            if ranked:
+                raise _Deny(f"READ {key!r}: {ranked}")
+            # A command-shaped key MAY still hold a bare path — an output_file
+            # redirect target legitimately does. A whitespace-free single token
+            # is unambiguously that, so it also earns the path-shaped scan. A
+            # real command string never takes this branch: parsing one as a
+            # single path is the false negative this whole split exists to fix.
+            if not any(c.isspace() for c in blob) and (
+                is_sensitive_path(blob)
+                or is_sensitive_path(Path(blob).name)
+                or _is_under_approval_store(blob)
+            ):
+                raise _Deny(f"sensitive-path READ refused ({key})")
 
     decision = evaluate_rules(rules, action_type, corpus)
     if decision.disposition == Disposition.WITNESS:
