@@ -46,13 +46,14 @@ Full debrief modal/ReviewDock behavior from the broader board blueprint is not a
 
 ## Commit 1 — Bus and event foundation
 
-- [ ] Add `cosmic_cli/events.py`: statuses, finish bases, event names, validation, and normalize_legacy.
-- [ ] Single-source FINISHED_STATUSES or maintain a compatibility re-export from agents.
-- [ ] Add `cosmic_cli/bus.py`: publish, subscribe, unsubscribe; isolate subscriber exceptions from the agent loop.
-- [ ] Add `tests/test_bus_schema.py`: envelope fields, verified/verifier equivalence, absent basis for blocked/max_steps, and sensitive-data checks where implemented.
-- [ ] Validate namespace conversion without inventing missing evidence in legacy records.
+- [x] Add `cosmic_cli/events.py`: statuses, finish bases, event names, validation, and normalize_legacy.
+- [x] Single-source FINISHED_STATUSES or maintain a compatibility re-export from agents.
+- [x] Add `cosmic_cli/bus.py`: publish, subscribe, unsubscribe; isolate subscriber exceptions from the agent loop.
+- [x] Add `tests/test_bus_schema.py`: envelope fields, verified/verifier equivalence, absent basis for blocked/max_steps, and sensitive-data checks where implemented.
+- [x] Validate namespace conversion without inventing missing evidence in legacy records.
 
 Acceptance: unit tests pass; agent behavior is unchanged at this step.
+Evidence: `.venv/bin/python -m pytest tests/ --ignore=tests/battery -q` → 386 passed (interpreter 3.10.12, import path this worktree). Dual-write aliases share the canonical seq (`compat`/`alias_of`); `iter_canonical` drops them. `unique_mission_stem` uses microseconds so concurrent missions do not share a file; session_id is unchanged.
 
 ## Commit 2 — Agent emission and compatibility
 

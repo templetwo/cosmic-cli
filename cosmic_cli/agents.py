@@ -29,6 +29,7 @@ from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.rules import load_rules_from_markdown
 from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
 from cosmic_cli.shell_guard import check_shell
+from cosmic_cli.events import FINISHED_STATUSES
 from cosmic_cli.tools import (
     looks_like_path_bug,
     parse_edit_payload,
@@ -59,9 +60,7 @@ CONTEXT_MEMORY_CAP = 16
 CONTEXT_CHARS_CAP = 28_000
 FILE_TREE_LINES_CAP = 120
 
-# A mission that reaches the FINISH path ends in exactly one of these.
-# "verified" proves only the check the operator's verifier ran.
-FINISHED_STATUSES = ("verified", "needs_review")
+# FINISHED_STATUSES is single-sourced in cosmic_cli.events (MissionBus v1).
 
 STEP_PREFIXES = (
     "GLOB:",
