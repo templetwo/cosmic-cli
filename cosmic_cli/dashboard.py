@@ -84,16 +84,12 @@ def state():
 
     goal = q("SELECT * FROM goals ORDER BY last_referenced DESC LIMIT 1")
     missions = tail_jsonl(ECHO, 12)
-    mc = sum(1 for m in tail_jsonl(ECHO, 500) if m.get("status") == "complete")
-    mb = sum(1 for m in tail_jsonl(ECHO, 500) if m.get("status") == "blocked")
-
     return {
         "now": now,
         "compass_total": compass_total,
         "compass_today": compass_today,
         "insights_today": insights_today,
-        "missions_complete": mc,
-        "missions_blocked": mb,
+        **mission_counts(),
         "activity": activity,
         "goal": goal[0] if goal else None,
         "feed": q("SELECT id, session_id, content, domain, layer, created_at FROM insights "
@@ -104,6 +100,26 @@ def state():
                      "FROM pending_confirmations WHERE expires_at>? ORDER BY id DESC LIMIT 10", (now,)),
         "missions": list(reversed(missions)),
         "steps": list(reversed(session_steps())),
+    }
+
+
+def mission_counts():
+    """Count recent missions by terminal status.
+
+    "complete" is no longer written (finish-line split): the count is kept so
+    echo records from before the split stay visible instead of vanishing, and
+    is never folded into "verified".
+    """
+    recent = tail_jsonl(ECHO, 500)
+
+    def n(status):
+        return sum(1 for m in recent if m.get("status") == status)
+
+    return {
+        "missions_verified": n("verified"),
+        "missions_needs_review": n("needs_review"),
+        "missions_complete": n("complete"),
+        "missions_blocked": n("blocked"),
     }
 
 
@@ -140,6 +156,7 @@ PAGE = r"""<!doctype html>
   .chip .dot { width:8px; height:8px; border-radius:50%; flex:none; }
   .OPEN .dot { background:var(--good); } .PAUSE .dot { background:var(--warn); } .WITNESS .dot { background:var(--crit); }
   .complete .dot { background:var(--good); } .blocked .dot { background:var(--crit); }
+  .verified .dot { background:var(--good); } .needs_review .dot { background:var(--warn); }
 
   .chart { background:var(--surface); border:1px solid var(--ring); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
   .chart h2, .panel h2 { font-size:12.5px; font-weight:600; color:var(--ink-2); text-transform:uppercase; letter-spacing:.6px; margin-bottom:10px; }
@@ -200,7 +217,7 @@ const seen = { feed:new Set(), compass:new Set() };
 let firstPaint = true;
 const fmtT = ms => new Date(ms).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const ICON = { OPEN:'✓', PAUSE:'⏸', WITNESS:'⛔', complete:'✓', blocked:'⛔' };
+const ICON = { OPEN:'✓', PAUSE:'⏸', WITNESS:'⛔', verified:'✓', needs_review:'?', complete:'✓', blocked:'⛔' };
 const chip = c => `<span class="chip ${esc(c)}"><span class="dot"></span>${ICON[c]||''} ${esc(c)}</span>`;
 
 async function tick() {
@@ -219,9 +236,12 @@ async function tick() {
   document.getElementById('t-today-sub').innerHTML =
     `${chip('OPEN')} ${cd.OPEN||0} ${chip('PAUSE')} ${cd.PAUSE||0} ${chip('WITNESS')} ${cd.WITNESS||0}`;
   document.getElementById('t-insights').textContent = s.insights_today.toLocaleString();
-  document.getElementById('t-missions').textContent = s.missions_complete + s.missions_blocked;
+  document.getElementById('t-missions').textContent =
+    s.missions_verified + s.missions_needs_review + s.missions_complete + s.missions_blocked;
   document.getElementById('t-missions-sub').innerHTML =
-    `${chip('complete')} ${s.missions_complete} ${chip('blocked')} ${s.missions_blocked}`;
+    `${chip('verified')} ${s.missions_verified} ${chip('needs_review')} ${s.missions_needs_review} ` +
+    (s.missions_complete ? `${chip('complete')} ${s.missions_complete} ` : '') +
+    `${chip('blocked')} ${s.missions_blocked}`;
   document.getElementById('t-pending').textContent = s.pending.length;
   document.getElementById('t-pending-sub').textContent =
     s.pending.length ? 'confirm from a human seat' : 'threshold quiet';

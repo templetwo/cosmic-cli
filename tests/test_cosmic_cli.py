@@ -70,7 +70,9 @@ class TestStargazerAgent:
             agent.context_manager, "read_file", return_value="a\nb\nc\n"
         ):
             result = agent.execute()
-        assert result["status"] == "complete"
+        # No verifier was supplied: the model's word alone is not a verdict.
+        assert result["status"] == "needs_review"
+        assert result["finish_basis"] == "model_declared"
         assert result["results"][-1]["result"] == "3 lines"
         assert echo.exists()
         assert "count lines" in echo.read_text()
@@ -131,7 +133,10 @@ class TestStargazerAgent:
             agent.context_manager, "read_file", return_value="line1\nline2\n"
         ):
             result = agent.execute()
-        assert result["status"] == "complete"
+        # The model never said FINISH; the harness wrote one to stop the loop.
+        # Before the finish-line split this asserted status == "complete".
+        assert result["status"] == "needs_review"
+        assert result["finish_basis"] == "synthesized"
         assert result["results"][-1]["step"] == "FINISH"
 
     def test_productive_shell_does_not_trigger_discovery_steer(self, tmp_path, monkeypatch):
@@ -182,7 +187,7 @@ class TestStargazerAgent:
             result = agent.execute()
         assert "cosmic-cli --version" in shell_calls
         assert any("date" in c for c in shell_calls), f"date never ran: {shell_calls}"
-        assert result["status"] == "complete"
+        assert result["status"] == "needs_review"
 
     def test_mutation_directive_steers_instead_of_false_finish(self, tmp_path, monkeypatch):
         echo = tmp_path / "echo.jsonl"
@@ -209,7 +214,7 @@ class TestStargazerAgent:
             ],
         ):
             result = agent.execute()
-        assert result["status"] == "complete"
+        assert result["status"] == "needs_review"
         assert (tmp_path / "f.py").read_text(encoding="utf-8") == "x = 2\n"
         assert "f.py" in result.get("edited", [])
 

@@ -53,6 +53,10 @@ SPECKS = "·      ✦        ·          ˚         ✧      ·         ˚      
 STATUS_STYLE: dict[str, tuple[str, str]] = {
     "ready": ("○", MUTED),
     "running": ("●", CYAN),
+    "verified": ("●", GOOD),
+    "needs_review": ("●", WARN),
+    # Not set since the finish-line split; kept so echo records written before
+    # it still render.
     "complete": ("●", GOOD),
     "passed": ("●", GOOD),
     "blocked": ("●", CRIT),
