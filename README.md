@@ -149,6 +149,7 @@ cosmic-cli init                         # COSMIC.md in this project
 cosmic-cli do 'your task'               # Helix on by default
 cosmic-cli do --no-helix 'offline'
 cosmic-cli do --review 'careful change' # mission + independent review seat
+cosmic-cli do --verify-cmd 'pytest -q' 'fix the failing test'  # finish line
 cosmic-cli review
 cosmic-cli sessions
 cosmic-cli dashboard                     # Mission Control over the chronicle
@@ -172,6 +173,36 @@ SHELL · CODE · TEST · TODO · PASS · FINISH
 - `EDIT: path|||old|||new` — unique match; Python syntax gated; `.cosmicbak`
 - WRITE/CREATE observations return `rel=` and `abs=` (less find-loop thrash)
 - `PASS: reason` — defer a blocked step and open a T2Helix thread for it
+
+### The finish line
+
+A mission that reaches FINISH ends in one of two statuses. There is no
+`complete`.
+
+| Status | Means | `finish_basis` |
+|---|---|---|
+| `verified` | The model declared FINISH **and** the operator's `--verify-cmd` exited 0. | `verifier` |
+| `needs_review` | The mission finished, and nothing established that it succeeded. | `model_declared` (no verifier given) · `synthesized` (the harness wrote the FINISH to stop a looping model) · `verifier_blocked` (the verifier was gated, declined, or returned no exit status) |
+
+- `verified` proves only the check that ran. It is not a claim that the code is
+  correct or safe to merge.
+- `finish_basis` is persisted with the status: in the echo record, the session
+  log's `end` event, and the Helix receipt (tag `finish_basis:<basis>`), and it
+  is shown on the status line as `needs_review (synthesized)`. A mission that
+  never reached the finish line carries no `finish_basis` key.
+- A FINISH the harness synthesizes is never `verified`, even with a passing
+  verifier: the model did not declare it, and no actor approves its own level.
+- The verifier runs through the same gated shell as any `SHELL` step (compass +
+  L0 floor). It is an operator flag; the model cannot set or change it.
+- A verifier that runs and fails is handed back to the model to fix. If the
+  step budget runs out first, the status is `max_steps`.
+- `--verify/--no-verify` is unchanged and separate: it is a `py_compile` syntax
+  check on edited Python, never a verdict.
+- Exit codes are unchanged: `verified` and `needs_review` both exit 0 (as
+  `complete` did), `blocked` exits 4, anything else exits 1. Read the status
+  line, not the exit code, to tell the two apart.
+- Echo records written before this split still say `complete`. Mission Control
+  counts them separately and never folds them into `verified`.
 
 ## Avionics stack
 

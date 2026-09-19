@@ -59,6 +59,10 @@ CONTEXT_MEMORY_CAP = 16
 CONTEXT_CHARS_CAP = 28_000
 FILE_TREE_LINES_CAP = 120
 
+# A mission that reaches the FINISH path ends in exactly one of these.
+# "verified" proves only the check the operator's verifier ran.
+FINISHED_STATUSES = ("verified", "needs_review")
+
 STEP_PREFIXES = (
     "GLOB:",
     "GREP:",
@@ -127,8 +131,11 @@ class StargazerAgent:
         helix_context: str = "",
         api_timeout: float = 120.0,
         approval_token_id: Optional[str] = None,
+        verify_cmd: Optional[str] = None,
     ):
         self.directive = directive
+        # Operator-supplied verifier (L2/L3). The model cannot set or change it.
+        self.verify_cmd = (verify_cmd or "").strip() or None
         self.client = Client(api_key=api_key, timeout=api_timeout)
         self.ui_callback = ui_callback or (lambda _: None)
         self.use_helix = use_helix and helix_bridge is not None
@@ -245,7 +252,9 @@ class StargazerAgent:
                     continue
         return out
 
-    def _append_echo(self, outcome: str, status: str) -> None:
+    def _append_echo(
+        self, outcome: str, status: str, finish_basis: Optional[str] = None
+    ) -> None:
         if not self.write_echo:
             return
         entry = {
@@ -257,6 +266,10 @@ class StargazerAgent:
             "edited": list(self.files_edited),
             "session": self.session_id,
         }
+        # Only a mission that reached the finish line has a basis; no null
+        # placeholder on the others.
+        if finish_basis:
+            entry["finish_basis"] = finish_basis
         try:
             with open(ECHO_FILE, "a", encoding="utf-8") as f:
                 json.dump(entry, f, ensure_ascii=False)
@@ -267,8 +280,12 @@ class StargazerAgent:
         # Helix chronicle (local memory substrate)
         if self.use_helix and helix_bridge is not None:
             try:
+                verdict = f"{status}:{finish_basis}" if finish_basis else status
+                tags = ["source:cosmic-cli", f"status:{status}", f"model:{self.model}"]
+                if finish_basis:
+                    tags.append(f"finish_basis:{finish_basis}")
                 content = (
-                    f"COSMIC mission [{status}] session={self.session_id}\n"
+                    f"COSMIC mission [{verdict}] session={self.session_id}\n"
                     f"directive: {self.directive}\n"
                     f"edited: {', '.join(self.files_edited) or '(none)'}\n"
                     f"outcome: {redact(str(outcome)[:1500])}"
@@ -277,8 +294,8 @@ class StargazerAgent:
                     content,
                     session_id=self.session_id,
                     domain="cosmic-cli",
-                    tags=["source:cosmic-cli", f"status:{status}", f"model:{self.model}"],
-                    intensity=0.7 if status == "complete" else 0.5,
+                    tags=tags,
+                    intensity=0.7 if status == "verified" else 0.5,
                 )
             except Exception as e:  # pragma: no cover
                 logger.warning("helix record failed: %s", e)
@@ -850,6 +867,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         def loop(progress=None, task=None) -> None:
             for i in range(self.max_steps):
                 self.steps_taken = i + 1
+                finish_synthesized = False
                 next_step = self._ask_grok_for_next_step()
                 if not next_step:
                     self._log("[warn] empty step")
@@ -946,6 +964,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         if self._repeat_count >= 2:
                             next_step = self._synthesize_finish()
                             upper = next_step.upper()
+                            finish_synthesized = True
                             self._log("repeat ×2 → synthesize FINISH")
 
                 if upper.startswith("FINISH:"):
@@ -968,6 +987,47 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         if progress is not None and task is not None:
                             progress.update(task, advance=1)
                         continue
+                    # py_compile above is a syntax check, not a verdict. A FINISH
+                    # the harness wrote for a looping model is never verified.
+                    basis = "synthesized" if finish_synthesized else "model_declared"
+                    verifier_note = ""
+                    if self.verify_cmd and not finish_synthesized:
+                        self._log(f"verify-cmd: {self.verify_cmd}")
+                        # Gated shell path on purpose: compass + L0 floor apply
+                        # to the verifier like any other SHELL. No bare subprocess.
+                        vc = self._run_shell(self.verify_cmd) or ""
+                        head = vc.lstrip()
+                        if head.startswith("[exit 0]"):
+                            basis = "verifier"
+                            verifier_note = "\n[verify-cmd: exit 0]"
+                        elif head.startswith("[exit"):
+                            # Ran and failed: hand it back to the model to fix.
+                            self._add_to_memory(
+                                f"VERIFY-CMD `{self.verify_cmd}` failed before "
+                                f"FINISH:\n{vc[:2000]}",
+                                label="verify",
+                            )
+                            final_result["results"].append(
+                                {"step": "VERIFY:cmd", "result": vc}
+                            )
+                            self._log("verify-cmd failed — continuing (fix it)")
+                            if progress is not None and task is not None:
+                                progress.update(task, advance=1)
+                            continue
+                        else:
+                            # Blocked, declined, or no exit marker: success was
+                            # not established. Fail closed.
+                            basis = "verifier_blocked"
+                            final_result["results"].append(
+                                {"step": "VERIFY:cmd", "result": vc}
+                            )
+                            # This text travels to the echo file and Helix:
+                            # through the funnel first.
+                            verifier_note = (
+                                "\n[verify-cmd: could not run — "
+                                f"{redact(vc.strip())[:200] or 'no output'}]"
+                            )
+                    finish_status = "verified" if basis == "verifier" else "needs_review"
                     final_answer = self._body_after(next_step, "FINISH:")
                     if v:
                         clean = "\n".join(
@@ -982,12 +1042,14 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                             final_answer += f"\n[auto-verify] {clean.strip()[:300]}"
                         else:
                             final_answer += "\n[auto-verify: ok]"
-                    self._log(f"done · {final_answer[:200]}")
+                    final_answer += verifier_note
+                    self._log(f"{finish_status} ({basis}) · {final_answer[:200]}")
                     final_result["results"].append(
                         {"step": "FINISH", "result": final_answer}
                     )
-                    final_result["status"] = "complete"
-                    self.status = "complete"
+                    final_result["status"] = finish_status
+                    final_result["finish_basis"] = basis
+                    self.status = finish_status
                     if progress is not None and task is not None:
                         progress.update(task, completed=self.max_steps)
                     return
@@ -1066,17 +1128,19 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             if final_result["results"]
             else "no steps"
         )
-        self._append_echo(str(last), final_result["status"])
-        self._session_write(
-            {
-                "event": "end",
-                "status": final_result["status"],
-                "edited": final_result["edited"],
-                "model": self.model,
-                "steps": self.steps_taken,
-                "warnings": final_result["warnings"],
-            }
-        )
+        basis = final_result.get("finish_basis")
+        self._append_echo(str(last), final_result["status"], basis)
+        end_event = {
+            "event": "end",
+            "status": final_result["status"],
+            "edited": final_result["edited"],
+            "model": self.model,
+            "steps": self.steps_taken,
+            "warnings": final_result["warnings"],
+        }
+        if basis:
+            end_event["finish_basis"] = basis
+        self._session_write(end_event)
         return final_result
 
     def _synthesize_finish(self) -> str:

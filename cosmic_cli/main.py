@@ -22,6 +22,7 @@ from xai_sdk.chat import assistant, system, user
 
 from cosmic_cli.agents import (
     DEFAULT_MODEL,
+    FINISHED_STATUSES,
     MAX_STEPS_DEFAULT,
     SESSION_DIR,
     StargazerAgent,
@@ -452,6 +453,13 @@ def dashboard_cmd(port: int, no_open: bool) -> None:
         subprocess.run(["open", url], check=False)
 
 
+def status_label(result: Dict[str, Any]) -> str:
+    """Status as shown to the operator: a finished mission names its basis."""
+    status = result.get("status", "?")
+    basis = result.get("finish_basis")
+    return f"{status} ({basis})" if basis else status
+
+
 def _run_stargazer(
     directive: str,
     *,
@@ -462,6 +470,7 @@ def _run_stargazer(
     auto_verify: bool = True,
     use_helix: bool = True,
     session_id: Optional[str] = None,
+    verify_cmd: Optional[str] = None,
 ) -> Dict[str, Any]:
     api_key = get_api_key()
     if not api_key:
@@ -537,18 +546,20 @@ def _run_stargazer(
         use_helix=use_helix,
         helix_context=helix_ctx,
         session_id=seat_session,
+        verify_cmd=verify_cmd,
     )
     result = agent.execute()
     status = result.get("status", "?")
     color = {
-        "complete": "green",
+        "verified": "green",
+        "needs_review": "yellow",
         "passed": "yellow",
         "max_steps": "yellow",
         "error": "red",
         "blocked": "red",
     }.get(status, "white")
     console.print(
-        f"[{color}]{status}[/{color}]  "
+        f"[{color}]{status_label(result)}[/{color}]  "
         f"[dim]session {result.get('session')} · {result.get('steps_taken', '?')} steps[/dim]"
     )
     if status == "blocked" and result.get("block_message"):
@@ -610,6 +621,16 @@ def _print_review(report: Dict[str, Any]) -> None:
     help="Auto py_compile on edited Python before FINISH",
 )
 @click.option(
+    "--verify-cmd",
+    "verify_cmd",
+    default=None,
+    help=(
+        "Verifier command, e.g. 'pytest -q'. Runs through the gated shell when "
+        "the model declares FINISH; status is 'verified' only if it exits 0. "
+        "Without it a finished mission is 'needs_review'."
+    ),
+)
+@click.option(
     "--review/--no-review",
     default=False,
     help="Run independent review seat on edited files after mission",
@@ -636,6 +657,7 @@ def do_cmd(
     model: str,
     quiet: bool,
     verify: bool,
+    verify_cmd: Optional[str],
     review: bool,
     helix: bool,
     session: Optional[str],
@@ -652,6 +674,7 @@ def do_cmd(
         auto_verify=verify,
         use_helix=helix,
         session_id=session,
+        verify_cmd=verify_cmd,
     )
     if review and result.get("edited"):
         api_key = get_api_key(prompt=False)
@@ -670,7 +693,7 @@ def do_cmd(
     # blocked = compass gate handed control up (exit 4 so cockpits can branch)
     if result.get("status") == "blocked":
         sys.exit(4)
-    if result.get("status") != "complete":
+    if result.get("status") not in FINISHED_STATUSES:
         sys.exit(1)
 
 
@@ -1387,7 +1410,7 @@ def deploy(
         quiet=quiet,
         auto_verify=verify,
     )
-    if result.get("status") != "complete":
+    if result.get("status") not in FINISHED_STATUSES:
         sys.exit(1)
 
 
@@ -1423,7 +1446,7 @@ def workflow(tasks, model: str) -> None:
             console.print(f"[red]unknown task: {task}[/red]")
             sys.exit(2)
     result = _run_stargazer(" and ".join(parts) + ".", model=model)
-    if result.get("status") != "complete":
+    if result.get("status") not in FINISHED_STATUSES:
         sys.exit(1)
 
 
