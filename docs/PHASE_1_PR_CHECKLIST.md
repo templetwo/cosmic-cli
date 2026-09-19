@@ -57,19 +57,20 @@ Evidence: `.venv/bin/python -m pytest tests/ --ignore=tests/battery -q` → 386 
 
 ## Commit 2 — Agent emission and compatibility
 
-- [ ] Initialize `_seq = 0` and an injectable LocalMissionBus per agent.
-- [ ] Add `_emit(event, **payload)` owning envelope creation, redaction, sequence assignment, publication, and raw JSONL append; no duplicate timestamp/session injection.
-- [ ] Emit compatible start events with identity.
-- [ ] Emit step.proposed with n, action verb, raw, head; keep legacy step consumers working.
-- [ ] Emit end with status, optional basis, edited, steps, warnings, outcome, and model.
-- [ ] Emit finish.declared immediately before the accepted finish end, with status, basis, synthesized, and redacted text.
-- [ ] On BLOCKED, emit compass.verdict when classification is known; end/echo have blocked status and no basis.
-- [ ] Add optional mission/ts to echo while retaining existing fields and write_echo behavior.
-- [ ] Preserve FINISH decision logic and existing BLOCKED return/no-thrash behavior.
-- [ ] Extend finish-line persistence tests for end/echo agreement.
-- [ ] Add scripted-agent sequence test and synthesized-finish bus test.
+- [x] Initialize `_seq = 0` and an injectable LocalMissionBus per agent.
+- [x] Add `_emit(event, **payload)` owning envelope creation, redaction, sequence assignment, publication, and raw JSONL append; no duplicate timestamp/session injection.
+- [x] Emit compatible start events with identity.
+- [x] Emit step.proposed with n, action verb, raw, head; keep legacy step consumers working.
+- [x] Emit end with status, optional basis, edited, steps, warnings, outcome, and model.
+- [x] Emit finish.declared immediately before the accepted finish end, with status, basis, synthesized, and redacted text.
+- [x] On BLOCKED, emit compass.verdict when classification is known; end/echo have blocked status and no basis.
+- [x] Add optional mission/ts to echo while retaining existing fields and write_echo behavior.
+- [x] Preserve FINISH decision logic and existing BLOCKED return/no-thrash behavior.
+- [x] Extend finish-line persistence tests for end/echo agreement.
+- [x] Add scripted-agent sequence test and synthesized-finish bus test.
 
 Acceptance: headless do works, and current dashboard-tail behavior remains compatible. If names change before reader migration, dual-write during the intermediate commits.
+Evidence: `.venv/bin/python -m pytest tests/test_finish_line.py tests/test_bus_schema.py tests/test_bus_agent_emit.py tests/test_isolation.py -q` → 58 passed (26+22+7+3). `.venv/bin/python -m pytest tests/ --ignore=tests/battery -q` → 406 passed (interpreter 3.10.12, import path this worktree). Bus is canonical-only; JSONL dual-writes start/step/end aliases sharing seq. `unique_mission_stem` + `token_hex(2)` nonce always; session_id unchanged.
 
 ## Commit 3 — PAUSE and compass hooks
 

@@ -9,8 +9,10 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,9 +29,19 @@ from cosmic_cli.gateway import ActionGateway, ApprovalManager, ApprovalStoreErro
 from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.rules import load_rules_from_markdown
+from cosmic_cli.bus import LocalMissionBus
 from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
 from cosmic_cli.shell_guard import check_shell
-from cosmic_cli.events import FINISHED_STATUSES
+from cosmic_cli.events import (
+    COMPASS_CLASSES,
+    FINISHED_STATUSES,
+    action_head,
+    action_verb,
+    make_compat_alias,
+    make_event,
+    unique_mission_stem,
+    utc_now_iso,
+)
 from cosmic_cli.tools import (
     looks_like_path_bug,
     parse_edit_payload,
@@ -94,6 +106,33 @@ _SHELL_PROBE_RE = re.compile(
     r"head|tail|cat|less|more|dir|rg|grep|ag|ack)\b",
     re.IGNORECASE,
 )
+_COMPASS_CLASS_RE = re.compile(r"\b(" + "|".join(COMPASS_CLASSES) + r")\b")
+_COMPASS_KIND_RE = re.compile(r"\(([A-Z][A-Z0-9_]*)\)")
+_COMPASS_RULE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(COMPASS_CLASSES)
+    + r")\b(?:\s*\([^)]+\))?\s*:\s*([A-Za-z0-9_.-]+)"
+)
+
+
+def _compass_payload_from_blocked(
+    blocked: str, next_step: str
+) -> Optional[Dict[str, Any]]:
+    """Parse OPEN/PAUSE/WITNESS from a [BLOCKED] string. None if unknown."""
+    match = _COMPASS_CLASS_RE.search(blocked or "")
+    if not match:
+        return None
+    kind = _COMPASS_KIND_RE.search(blocked or "")
+    rule = _COMPASS_RULE_RE.search(blocked or "")
+    reason = redact(blocked or "")
+    reason = re.sub(r"\btok-[0-9A-Fa-f]{16}\b", "[token-redacted]", reason)
+    return {
+        "classification": match.group(1),
+        "tool_name": kind.group(1) if kind else action_verb(next_step),
+        "action_summary": action_head(next_step, cap=500),
+        "rule_matched": rule.group(1) if rule else "",
+        "reason": reason,
+    }
 
 
 def _is_discovery_step(upper: str, next_step: str) -> bool:
@@ -131,6 +170,7 @@ class StargazerAgent:
         api_timeout: float = 120.0,
         approval_token_id: Optional[str] = None,
         verify_cmd: Optional[str] = None,
+        bus: Optional[LocalMissionBus] = None,
     ):
         self.directive = directive
         # Operator-supplied verifier (L2/L3). The model cannot set or change it.
@@ -195,11 +235,15 @@ class StargazerAgent:
         self.session_id = resolved or datetime.now(timezone.utc).strftime(
             "%Y%m%dT%H%M%SZ"
         )
-        # Mission log file: keep a unique path even when reusing Helix session
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.mission_id = f"{self.session_id}__{stamp}" if resolved else self.session_id
+        # JSONL identity is unique per start; approvals stay keyed by session_id.
+        self.mission_id = unique_mission_stem(
+            self.session_id, nonce=secrets.token_hex(2)
+        )
         self.session_path = SESSION_DIR / f"{self.mission_id}.jsonl"
         SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        self._seq = 0
+        self._bus = bus if bus is not None else LocalMissionBus()
+        self._jsonl_lock = threading.Lock()
 
     # ── logging / memory ──────────────────────────────────────────
 
@@ -223,18 +267,42 @@ class StargazerAgent:
         preview = text if len(text) <= 160 else text[:157] + "..."
         self._log(f"{label}: {preview}" if label else preview, obs=True)
 
+    def _session_write_raw(self, record: Dict[str, Any]) -> None:
+        try:
+            line = json.dumps(record, ensure_ascii=False)
+            with self._jsonl_lock:
+                with open(self.session_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+                    f.write("\n")
+        except OSError:
+            pass
+
     def _session_write(self, record: Dict[str, Any]) -> None:
-        record = {
+        # Enveloped records already carry ts/session; do not wrap twice.
+        if "v" in record and "seq" in record:
+            self._session_write_raw(record)
+            return
+        wrapped = {
             **record,
             "ts": datetime.now(timezone.utc).isoformat(),
             "session": self.session_id,
         }
-        try:
-            with open(self.session_path, "a", encoding="utf-8") as f:
-                json.dump(record, f, ensure_ascii=False)
-                f.write("\n")
-        except OSError:
-            pass
+        self._session_write_raw(wrapped)
+
+    def _emit(self, event: str, **payload: Any) -> None:
+        rec = make_event(
+            event,
+            session=self.session_id,
+            mission=self.mission_id,
+            seq=self._seq,
+            **payload,
+        )
+        self._seq += 1
+        self._bus.publish(rec)
+        self._session_write_raw(rec)
+        alias = make_compat_alias(rec)
+        if alias:
+            self._session_write_raw(alias)
 
     def _load_echo_memory(self) -> List[Dict[str, Any]]:
         if not ECHO_FILE.exists():
@@ -264,6 +332,8 @@ class StargazerAgent:
             "steps": self.steps_taken,
             "edited": list(self.files_edited),
             "session": self.session_id,
+            "mission": self.mission_id,
+            "ts": utc_now_iso(),
         }
         # Only a mission that reached the finish line has a basis; no null
         # placeholder on the others.
@@ -851,7 +921,23 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             f"mission · model={self.model} · mode={self.exec_mode} · "
             f"session={self.session_id}"
         )
-        self._session_write({"event": "start", "directive": self.directive, "model": self.model})
+        from cosmic_cli import __version__ as cosmic_version
+        from cosmic_cli.buildinfo import _provenance_commit
+
+        self._emit(
+            "mission.start",
+            directive=self.directive,
+            model=self.model,
+            exec_mode=self.exec_mode,
+            root=str(self.root),
+            helix=bool(self.use_helix),
+            verify_cmd=self.verify_cmd,
+            review=False,
+            max_steps=self.max_steps,
+            cosmic_version=cosmic_version,
+            cosmic_commit=_provenance_commit() or "",
+        )
+        self._emit("mission.status", status="running")
         final_result: Dict[str, Any] = {
             "directive": self.directive,
             "model": self.model,
@@ -875,13 +961,13 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 head = next_step.splitlines()[0][:120]
                 self._log(f"→ {i + 1}/{self.max_steps} {head}")
                 upper = next_step.upper()
-                self._session_write(
-                {
-                    "event": "step",
-                    "n": i + 1,
-                    "action": redact(next_step[:2000]),
-                }
-            )
+                self._emit(
+                    "step.proposed",
+                    n=i + 1,
+                    action=action_verb(next_step),
+                    raw=redact(next_step[:2000]),
+                    head=action_head(next_step),
+                )
 
                 # Discovery thrash counter — probe-like only (not productive SHELL).
                 if _is_discovery_step(upper, next_step):
@@ -1051,6 +1137,14 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     self.status = finish_status
                     if progress is not None and task is not None:
                         progress.update(task, completed=self.max_steps)
+                    self._emit(
+                        "finish.declared",
+                        n=self.steps_taken,
+                        status=finish_status,
+                        finish_basis=basis,
+                        synthesized=finish_synthesized,
+                        text=final_answer,
+                    )
                     return
 
                 if upper.startswith("PASS:"):
@@ -1090,6 +1184,13 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         )
                         if progress is not None and task is not None:
                             progress.update(task, completed=self.max_steps)
+                        compass = _compass_payload_from_blocked(output, next_step)
+                        if compass:
+                            self._emit(
+                                "compass.verdict",
+                                n=self.steps_taken,
+                                **compass,
+                            )
                         return
                 except Exception as e:
                     self._recover_from_failure(next_step, e)
@@ -1129,17 +1230,21 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         )
         basis = final_result.get("finish_basis")
         self._append_echo(str(last), final_result["status"], basis)
-        end_event = {
-            "event": "end",
+        end_payload: Dict[str, Any] = {
             "status": final_result["status"],
             "edited": final_result["edited"],
             "model": self.model,
             "steps": self.steps_taken,
             "warnings": final_result["warnings"],
+            "outcome": str(last)[:2000],
         }
         if basis:
-            end_event["finish_basis"] = basis
-        self._session_write(end_event)
+            end_payload["finish_basis"] = basis
+        if final_result["status"] == "blocked":
+            end_payload["block_message"] = str(
+                final_result.get("block_message") or last
+            )[:2000]
+        self._emit("mission.end", **end_payload)
         return final_result
 
     def _synthesize_finish(self) -> str:
