@@ -296,8 +296,38 @@ def decide(envelope: dict, rules, exec_mode: str = "safe") -> Optional[str]:
         raise _Deny(f"deny-by-default: unclassified/MCP tool {eff_name!r}")
 
     # Sensitive-path refusal for the read/write classes (unification table).
-    # Path-shaped keys only — these genuinely hold one bare path.
-    if action_type in (ActionType.READ, ActionType.WRITE):
+    #
+    # WRITE (MUTATE tools: Write/Edit/Create/…): there is NO kernel-floor
+    # backstop on Stargazer WRITE (direct Python f.write — never
+    # wrap_argv_for_l0_shell). If we cannot resolve a path, we MUST deny —
+    # not skip the check when _extract returns "" (CC-008 / Hermes W9–W16).
+    # Empty string and missing/unknown keys are the same failure mode.
+    #
+    # READ path-shaped keys only — these genuinely hold one bare path.
+    # Command-shaped READ keys are scanned separately below (CC-006).
+    if action_type == ActionType.WRITE:
+        path = _extract(
+            eff_input,
+            *_PATH_SHAPED_KEYS,
+            # Common cockpit aliases — shrink the gap; deny-by-default still
+            # closes any future unrecognized key (CC-008 options a + b).
+            "filepath",
+            "filename",
+            "dest",
+            "target",
+        )
+        if not path or not str(path).strip():
+            raise _Deny(
+                "cannot verify path safety: no recognized path key on WRITE "
+                "(deny-by-default; empty or unknown path field)"
+            )
+        if (
+            is_sensitive_path(path)
+            or is_sensitive_path(Path(path).name)
+            or _is_under_approval_store(path)
+        ):
+            raise _Deny(f"sensitive-path {action_type.value} refused")
+    elif action_type == ActionType.READ:
         path = _extract(eff_input, *_PATH_SHAPED_KEYS)
         if path and (
             is_sensitive_path(path)
