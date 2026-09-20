@@ -429,7 +429,9 @@ installed code version.
 
 ## Mission Control dashboard
 
-A read-only local dashboard over the shared chronicle.
+A read-only local dashboard over the shared chronicle. Session JSONL and echo
+readers accept MissionBus v1 and legacy `start`/`step`/`end` names; see
+[MissionBus v1 (Phase-1)](docs/MISSION_BUS_v1.md).
 
 ```bash
 cosmic-cli dashboard               # start + open http://localhost:4333

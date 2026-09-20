@@ -333,3 +333,22 @@ class TestUIIntegration:
             assert ui.show_logs["test directive"] is True
             ui.toggle_logs("test directive")
             assert ui.show_logs["test directive"] is False
+
+    def test_two_directives_keep_two_agents(self):
+        ui = DirectivesUI(testing=True)
+        with patch.dict(os.environ, {"XAI_API_KEY": "test_key"}), patch(
+            "cosmic_cli.ui.StargazerAgent"
+        ) as mock_agent_cls, patch.object(ui, "_refresh_panel"):
+            first, second = Mock(), Mock()
+            first.status = "ready"
+            first.logs = []
+            first.mission_id = "M1"
+            second.status = "ready"
+            second.logs = []
+            second.mission_id = "M2"
+            mock_agent_cls.side_effect = [first, second]
+            ui.add_directive("alpha")
+            ui.add_directive("beta")
+            assert set(ui.agents) == {"alpha", "beta"}
+            assert ui.agents["alpha"] is first
+            assert ui.agents["beta"] is second

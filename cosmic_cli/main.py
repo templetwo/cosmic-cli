@@ -1177,8 +1177,8 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
 
     Local PAUSE tokens (gate seam) are L2-only (privilege ranking):
       show-pause-token  — display last minted token (interactive TTY only)
-      accept-pause      — stage token for one approved retry via the wrapper
-                          (writes ~/.cosmic-cli/operator_approval_token)
+      accept-pause      — stage one unused token for retry (action_sha256;
+                          pass the sha when two pauses are pending)
     L0 agent shells cannot invoke these. No env break-glass (that would be an
     L2 credential L0 can set). Kernel floor: sandbox.toml deny ~/.cosmic-cli.
     See COSMIC.md § Ranking.
@@ -1212,30 +1212,19 @@ def helix_cmd(action: str, query: str, domain: str) -> None:
         )
         return
     if action == "accept-pause":
-        # Stage L2 operator approval for one gate retry (file channel).
-        src = Path.home() / ".cosmic-cli" / "last_pause_token.json"
-        dst = Path.home() / ".cosmic-cli" / "operator_approval_token"
-        if not src.is_file():
-            console.print("[yellow]no last_pause_token.json — nothing to accept[/yellow]")
-            sys.exit(1)
-        try:
-            data = json.loads(src.read_text(encoding="utf-8"))
-            tok = (data.get("token") or "").strip()
-            if not tok:
-                console.print("[red]empty token in last_pause_token.json[/red]")
-                sys.exit(1)
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dst.with_suffix(".tmp")
-            tmp.write_text(tok + "\n", encoding="utf-8")
-            os.chmod(tmp, 0o600)
-            tmp.replace(dst)
-            os.chmod(dst, 0o600)
-        except Exception as e:
-            console.print(f"[red]accept-pause failed: {e}[/red]")
-            sys.exit(1)
+        # Stage L2 operator approval for one gate retry. Binds action_sha256;
+        # last_pause_token.json is not the selector under concurrency.
+        from cosmic_cli.pause_authority import accept_pause_cli
+
+        result = accept_pause_cli(query, require_tty=False)
+        if result.outcome != "approved":
+            console.print(f"[yellow]{result.message}[/yellow]")
+            sys.exit(1 if result.outcome != "ranking_denied" else 4)
+        sha = result.handle.action_sha256
         console.print(
             f"[green]staged[/green] operator_approval_token for one retry "
-            f"(channel={data.get('channel')}). Re-run the blocked action."
+            f"(action={sha[:12]}…). Re-run the blocked action "
+            f"(same --session; consume happens on retry, not here)."
         )
         return
     if action == "status":

@@ -145,14 +145,14 @@ class TestPersistence:
     a declared finish nobody checked, and a gated verifier all look the same.
     """
 
-    def _echo_rows(self, tmp_path, monkeypatch, steps, **kw):
+    def _echo_rows(self, tmp_path, monkeypatch, steps, shell=None, **kw):
         import json
 
         echo = tmp_path / "echo.jsonl"
         monkeypatch.setattr("cosmic_cli.agents.ECHO_FILE", echo)
         monkeypatch.setattr("cosmic_cli.agents.SESSION_DIR", tmp_path / "sessions")
         agent = make_agent(write_echo=True, **kw)
-        result, _ = run(agent, steps)
+        result, _ = run(agent, steps, shell=shell)
         rows = [json.loads(ln) for ln in echo.read_text().splitlines() if ln.strip()]
         events = [
             json.loads(ln)
@@ -171,6 +171,26 @@ class TestPersistence:
         end = [e for e in events if e.get("event") == "end"][-1]
         assert end["status"] == "needs_review"
         assert end["finish_basis"] == "model_declared"
+
+    def test_echo_and_canonical_end_agree_on_status_and_basis(
+        self, tmp_path, monkeypatch
+    ):
+        from cosmic_cli.events import iter_canonical
+
+        result, rows, events = self._echo_rows(
+            tmp_path, monkeypatch, ["FINISH: done"]
+        )
+        echo = rows[-1]
+        end = [e for e in iter_canonical(events) if e.get("event") == "mission.end"][-1]
+        assert echo["status"] == end["status"] == result["status"] == "needs_review"
+        assert (
+            echo["finish_basis"]
+            == end["finish_basis"]
+            == result["finish_basis"]
+            == "model_declared"
+        )
+        assert echo.get("mission") == end["mission"]
+        assert "ts" in echo
 
     def test_unfinished_mission_has_no_basis_key(self, tmp_path, monkeypatch):
         # max_steps never reached the finish line: no basis to report, and no
@@ -195,6 +215,26 @@ class TestPersistence:
         kwargs = rec.call_args.kwargs
         assert "finish_basis:model_declared" in kwargs["tags"]
         assert "model_declared" in rec.call_args.args[0]
+
+    def test_blocked_omits_finish_basis_on_echo_and_end(self, tmp_path, monkeypatch):
+        from cosmic_cli.events import iter_canonical
+
+        result, rows, events = self._echo_rows(
+            tmp_path,
+            monkeypatch,
+            ["SHELL: echo hi"],
+            shell=["[BLOCKED] compass PAUSE: approval required"],
+        )
+        assert result["status"] == "blocked"
+        assert "finish_basis" not in result
+        assert rows[-1]["status"] == "blocked"
+        assert "finish_basis" not in rows[-1]
+        legacy = [e for e in events if e.get("event") == "end"][-1]
+        assert legacy["status"] == "blocked"
+        assert "finish_basis" not in legacy
+        end = [e for e in iter_canonical(events) if e.get("event") == "mission.end"][-1]
+        assert end["status"] == "blocked"
+        assert "finish_basis" not in end
 
     def test_cli_status_label_names_the_basis(self):
         from cosmic_cli.main import status_label

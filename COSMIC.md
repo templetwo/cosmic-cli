@@ -28,3 +28,31 @@ SHELL · CODE · TEST · TODO · PASS · FINISH
 - **Residual:** what was not verified
 
 Prefer local reversible work. No force-push, no drive-by refactors.
+
+## Pilot Board PAUSE (operator)
+
+The TUI never shows an approval token.
+
+| Key | Action |
+| --- | --- |
+| `p` | Focus pending gates |
+| `y` | Approve the selected mission's pending action |
+| `n` | Decline the selected mission's pending action |
+| Esc | Dismiss the modal without approving |
+
+`y`/`n` bind `action_sha256` of the selected pending row. They do not
+approve whichever token was minted last. The token body is never
+rendered, logged, placed on the bus, or given to the model.
+
+Approve **stages** one retry (`~/.cosmic-cli/operator_approval_token`) and
+does not consume the token. Consume is `claim_once` on the retry.
+
+Retry after approve (headless BLOCKED still exits 4, no auto-loop):
+
+```bash
+cosmic-cli helix accept-pause              # one pending action
+cosmic-cli helix accept-pause <sha256>     # two concurrent pauses
+cosmic-cli do --session <session> '…'      # same session; token consumed here
+```
+
+Decline burns the unused token and leaves the mission blocked. No remint.

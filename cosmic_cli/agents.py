@@ -5,14 +5,17 @@ Default model: grok-4.5. Filesystem is ground truth; model is the reasoner.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import tempfile
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -27,8 +30,20 @@ from cosmic_cli.gateway import ActionGateway, ApprovalManager, ApprovalStoreErro
 from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.rules import load_rules_from_markdown
+from cosmic_cli.bus import LocalMissionBus
+from cosmic_cli.pause_authority import load_staged_token
 from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
 from cosmic_cli.shell_guard import check_shell
+from cosmic_cli.events import (
+    COMPASS_CLASSES,
+    FINISHED_STATUSES,
+    action_head,
+    action_verb,
+    make_compat_alias,
+    make_event,
+    unique_mission_stem,
+    utc_now_iso,
+)
 from cosmic_cli.tools import (
     looks_like_path_bug,
     parse_edit_payload,
@@ -59,9 +74,7 @@ CONTEXT_MEMORY_CAP = 16
 CONTEXT_CHARS_CAP = 28_000
 FILE_TREE_LINES_CAP = 120
 
-# A mission that reaches the FINISH path ends in exactly one of these.
-# "verified" proves only the check the operator's verifier ran.
-FINISHED_STATUSES = ("verified", "needs_review")
+# FINISHED_STATUSES is single-sourced in cosmic_cli.events (MissionBus v1).
 
 STEP_PREFIXES = (
     "GLOB:",
@@ -95,6 +108,124 @@ _SHELL_PROBE_RE = re.compile(
     r"head|tail|cat|less|more|dir|rg|grep|ag|ack)\b",
     re.IGNORECASE,
 )
+_COMPASS_CLASS_RE = re.compile(r"\b(" + "|".join(COMPASS_CLASSES) + r")\b")
+_COMPASS_KIND_RE = re.compile(r"\(([A-Z][A-Z0-9_]*)\)")
+_COMPASS_RULE_RE = re.compile(
+    r"\b(?:"
+    + "|".join(COMPASS_CLASSES)
+    + r")\b(?:\s*\([^)]+\))?\s*:\s*([A-Za-z0-9_.-]+)"
+)
+_PAUSE_TOKEN_RE = re.compile(r"\btok-[0-9A-Fa-f]{16}\b")
+# Leading result marker from _run_shell / _run_code. Not UPG-001 process evidence.
+_EXIT_MARKER_RE = re.compile(r"^\[exit (\d+)\]")
+# Matches ApprovalManager.mint_token default; used only for bus expiry display.
+_PAUSE_TTL_SECONDS = 300
+
+
+def _redact_pause_text(text: str, extra_token: str = "") -> str:
+    """Redact secrets and strip minted token bodies from bus-visible text."""
+    out = redact(text or "")
+    out = _PAUSE_TOKEN_RE.sub("[token-redacted]", out)
+    tok = extra_token or ""
+    if tok and tok not in ("?",) and tok in out:
+        out = out.replace(tok, "[token-redacted]")
+    return out
+
+
+def _opaque_pending_id(value: Any) -> Any:
+    """Helix rowid only. Never a tok- body or 16-hex credential."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or s.startswith("tok-"):
+            return None
+        if len(s) == 16:
+            try:
+                int(s, 16)
+                return None
+            except ValueError:
+                pass
+        if s.isdigit():
+            return int(s)
+        return None
+    return None
+
+
+def _pause_expiry_iso(ttl_seconds: int = _PAUSE_TTL_SECONDS) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat()
+
+
+def _helix_pending_id(hdec: Dict[str, Any]) -> Any:
+    raw = hdec.get("raw") if isinstance(hdec.get("raw"), dict) else {}
+    for src in (hdec, raw):
+        if "pending_id" in src and src.get("pending_id") is not None:
+            return _opaque_pending_id(src.get("pending_id"))
+    return None
+
+
+def _helix_action_sha(hdec: Dict[str, Any], payload: str) -> str:
+    raw = hdec.get("raw") if isinstance(hdec.get("raw"), dict) else {}
+    for src in (hdec, raw):
+        val = src.get("action_sha256") or src.get("actionSha256")
+        if isinstance(val, str) and len(val) == 64:
+            try:
+                int(val, 16)
+                return val.lower()
+            except ValueError:
+                pass
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _policy_rule_id(decision: Any) -> str:
+    matches = getattr(decision, "matches", None) or ()
+    if matches:
+        return matches[0].rule.rule_id
+    return "policy"
+
+
+def _compass_payload_from_blocked(
+    blocked: str, next_step: str
+) -> Optional[Dict[str, Any]]:
+    """Parse OPEN/PAUSE/WITNESS from a [BLOCKED] string. None if unknown."""
+    match = _COMPASS_CLASS_RE.search(blocked or "")
+    if not match:
+        return None
+    kind = _COMPASS_KIND_RE.search(blocked or "")
+    rule = _COMPASS_RULE_RE.search(blocked or "")
+    reason = _redact_pause_text(blocked or "")
+    return {
+        "classification": match.group(1),
+        "tool_name": kind.group(1) if kind else action_verb(next_step),
+        "action_summary": _redact_pause_text(action_head(next_step, cap=500)),
+        "rule_matched": _redact_pause_text(rule.group(1) if rule else ""),
+        "reason": reason,
+    }
+
+
+def _as_output_text(output: Any) -> str:
+    return output if isinstance(output, str) else "" if output is None else str(output)
+
+
+def _parse_exit_marker(output: Optional[str]) -> Optional[int]:
+    """Integer from a leading `[exit N]` marker. Otherwise None — never assume 0."""
+    head = _as_output_text(output).lstrip()
+    match = _EXIT_MARKER_RE.match(head)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _output_blocked(output: Optional[str]) -> bool:
+    return _as_output_text(output).lstrip().startswith("[BLOCKED]")
+
+
+def _mutation_ok(result: Any) -> bool:
+    return isinstance(result, tuple) and len(result) >= 2 and result[1] is True
 
 
 def _is_discovery_step(upper: str, next_step: str) -> bool:
@@ -132,6 +263,7 @@ class StargazerAgent:
         api_timeout: float = 120.0,
         approval_token_id: Optional[str] = None,
         verify_cmd: Optional[str] = None,
+        bus: Optional[LocalMissionBus] = None,
     ):
         self.directive = directive
         # Operator-supplied verifier (L2/L3). The model cannot set or change it.
@@ -145,9 +277,12 @@ class StargazerAgent:
         self.context_manager = ContextManager(root_dir=str(self.root))
         # Local policy kernel + gateway (avionics assembly 2026-07-15).
         # Helix compass remains the remote witness; this is the in-process door.
-        self.approval_token_id = approval_token_id or os.getenv(
-            "COSMIC_APPROVAL_TOKEN"
+        self.approval_token_id = (
+            approval_token_id
+            or os.getenv("COSMIC_APPROVAL_TOKEN")
+            or load_staged_token()
         )
+        self._helix_pause_tokens: Dict[Any, str] = {}
         try:
             self._approval_mgr = ApprovalManager()
         except ApprovalStoreError as e:
@@ -196,11 +331,16 @@ class StargazerAgent:
         self.session_id = resolved or datetime.now(timezone.utc).strftime(
             "%Y%m%dT%H%M%SZ"
         )
-        # Mission log file: keep a unique path even when reusing Helix session
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.mission_id = f"{self.session_id}__{stamp}" if resolved else self.session_id
+        # JSONL identity is unique per start; approvals stay keyed by session_id.
+        self.mission_id = unique_mission_stem(
+            self.session_id, nonce=secrets.token_hex(2)
+        )
         self.session_path = SESSION_DIR / f"{self.mission_id}.jsonl"
         SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        self._seq = 0
+        self._bus = bus if bus is not None else LocalMissionBus()
+        self._jsonl_lock = threading.Lock()
+        self._compass_emitted_n: Optional[int] = None
 
     # ── logging / memory ──────────────────────────────────────────
 
@@ -224,18 +364,194 @@ class StargazerAgent:
         preview = text if len(text) <= 160 else text[:157] + "..."
         self._log(f"{label}: {preview}" if label else preview, obs=True)
 
+    def _session_write_raw(self, record: Dict[str, Any]) -> None:
+        try:
+            line = json.dumps(record, ensure_ascii=False)
+            with self._jsonl_lock:
+                with open(self.session_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+                    f.write("\n")
+        except OSError:
+            pass
+
     def _session_write(self, record: Dict[str, Any]) -> None:
-        record = {
+        # Enveloped records already carry ts/session; do not wrap twice.
+        if "v" in record and "seq" in record:
+            self._session_write_raw(record)
+            return
+        wrapped = {
             **record,
             "ts": datetime.now(timezone.utc).isoformat(),
             "session": self.session_id,
         }
+        self._session_write_raw(wrapped)
+
+    def _emit(self, event: str, **payload: Any) -> None:
+        rec = make_event(
+            event,
+            session=self.session_id,
+            mission=self.mission_id,
+            seq=self._seq,
+            **payload,
+        )
+        self._seq += 1
+        self._bus.publish(rec)
+        self._session_write_raw(rec)
+        alias = make_compat_alias(rec)
+        if alias:
+            self._session_write_raw(alias)
+
+    def helix_pause_token(
+        self,
+        *,
+        pending_id: Any = None,
+        action_sha256: Optional[str] = None,
+    ) -> Optional[str]:
+        """Privileged Helix pending token. Never copy onto bus or widgets."""
+        if pending_id is not None:
+            tok = self._helix_pause_tokens.get(("id", pending_id))
+            if tok:
+                return tok
+        if action_sha256:
+            return self._helix_pause_tokens.get(("sha", action_sha256))
+        return None
+
+    def _remember_helix_pause(
+        self, tok: str, *, pending_id: Any, action_sha256: str
+    ) -> None:
+        if not tok or tok == "?":
+            return
+        if pending_id is not None:
+            self._helix_pause_tokens[("id", pending_id)] = tok
+        if action_sha256:
+            self._helix_pause_tokens[("sha", action_sha256)] = tok
+
+    def _emit_pause_minted(
+        self,
+        action_summary: str,
+        action_sha256: str,
+        expires_at: Optional[str] = None,
+        pending_id: Any = None,
+        channel: str = "local",
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "action_summary": _redact_pause_text(action_summary),
+            "action_sha256": action_sha256,
+            "channel": channel if channel in ("local", "helix", "gate") else "local",
+        }
+        if expires_at:
+            payload["expires_at"] = expires_at
+        oid = _opaque_pending_id(pending_id)
+        if oid is not None:
+            payload["pending_id"] = oid
+        self._emit("gate.pause_minted", **payload)
+
+    def _emit_pause_resolved(
+        self,
+        decision: str,
+        action_summary: str,
+        action_sha256: str,
+        *,
+        by: Optional[str] = None,
+        pending_id: Any = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "decision": decision,
+            "action_summary": _redact_pause_text(action_summary),
+            "action_sha256": action_sha256,
+        }
+        if by:
+            payload["by"] = by
+        oid = _opaque_pending_id(pending_id)
+        if oid is not None:
+            payload["pending_id"] = oid
+        self._emit("gate.pause_resolved", **payload)
+
+    def _emit_compass_verdict(
+        self,
+        classification: str,
+        *,
+        tool_name: str,
+        action_summary: str,
+        rule_matched: str = "",
+        reason: str = "",
+        extra_token: str = "",
+    ) -> None:
+        cls = (classification or "").strip().upper()
+        if cls not in COMPASS_CLASSES:
+            return
+        # Allow-through is not a block verdict. Never invent OPEN.
+        if cls == "OPEN":
+            return
+        self._emit(
+            "compass.verdict",
+            n=self.steps_taken,
+            classification=cls,
+            tool_name=tool_name,
+            action_summary=_redact_pause_text(action_summary, extra_token),
+            rule_matched=_redact_pause_text(rule_matched, extra_token),
+            reason=_redact_pause_text(reason, extra_token),
+        )
+        self._compass_emitted_n = self.steps_taken
+
+    def _shell_evidence(self, output: Optional[str]) -> Dict[str, Any]:
+        text = _as_output_text(output)
+        blocked = _output_blocked(text)
+        # Blocked output must not be painted as exit 0.
+        exit_code = None if blocked else _parse_exit_marker(text)
+        return {
+            "exit_code": exit_code,
+            "blocked": blocked,
+            "output_head": text,
+        }
+
+    def _emit_shell_exec(self, *, kind: str, cmd: str, output: Optional[str]) -> None:
+        self._emit(
+            "shell.exec",
+            n=self.steps_taken,
+            kind=kind,
+            cmd=cmd,
+            **self._shell_evidence(output),
+        )
+
+    def _emit_verify_result(self, *, role: str, cmd: str, output: Optional[str]) -> None:
+        ev = self._shell_evidence(output)
+        self._emit(
+            "verify.result",
+            n=self.steps_taken,
+            cmd=cmd,
+            role=role,
+            ok=ev["exit_code"] == 0,
+            **ev,
+        )
+
+    def _emit_fs_mutate_if_ok(
+        self,
+        op: str,
+        path: str,
+        result: Any,
+        receipt: Any = None,
+    ) -> None:
+        if not _mutation_ok(result):
+            return
+        payload: Dict[str, Any] = {
+            "n": self.steps_taken,
+            "op": op,
+            "path": path,
+        }
+        payload["rel"] = path
         try:
-            with open(self.session_path, "a", encoding="utf-8") as f:
-                json.dump(record, f, ensure_ascii=False)
-                f.write("\n")
+            payload["abs"] = str((self.root / path).resolve())
         except OSError:
             pass
+        if receipt is not None:
+            ck = getattr(receipt, "checkpoint_id", None)
+            rid = getattr(receipt, "receipt_id", None)
+            if ck:
+                payload["checkpoint_id"] = ck
+            if rid:
+                payload["receipt_id"] = rid
+        self._emit("fs.mutate", **payload)
 
     def _load_echo_memory(self) -> List[Dict[str, Any]]:
         if not ECHO_FILE.exists():
@@ -265,6 +581,8 @@ class StargazerAgent:
             "steps": self.steps_taken,
             "edited": list(self.files_edited),
             "session": self.session_id,
+            "mission": self.mission_id,
+            "ts": utc_now_iso(),
         }
         # Only a mission that reached the finish line has a basis; no null
         # placeholder on the others.
@@ -575,6 +893,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 _do_edit,
                 expected_content=expected_post.encode("utf-8"),
                 match_input=f"EDIT {path}\n{old}\n{new}",
+                op="EDIT",
             )
             if isinstance(result, str):
                 return result
@@ -625,6 +944,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 _do_write,
                 expected_content=content.encode("utf-8"),
                 match_input=f"WRITE {path}\n{content}",
+                op="WRITE",
             )
             if isinstance(result, str):
                 return result
@@ -654,6 +974,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 path,
                 bind_mkdir(path=path),
                 _do_mkdir,
+                op="MKDIR",
             )
             if isinstance(result, str):
                 return result
@@ -686,6 +1007,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 _do_create,
                 expected_content=content.encode("utf-8"),
                 match_input=f"CREATE {path}\n{content}",
+                op="CREATE",
             )
             if isinstance(result, str):
                 return result
@@ -725,12 +1047,16 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         if upper.startswith("SHELL:"):
             cmd = self._body_after(step, "SHELL:")
             self._log(f"SHELL {cmd}")
-            return self._run_shell(cmd)
+            output = self._run_shell(cmd)
+            self._emit_shell_exec(kind="SHELL", cmd=cmd, output=output)
+            return output
 
         if upper.startswith("CODE:"):
             code = self._body_after(step, "CODE:")
             self._log(f"CODE ({len(code)} chars)")
-            return self._run_code(code)
+            output = self._run_code(code)
+            self._emit_shell_exec(kind="CODE", cmd=code, output=output)
+            return output
 
         if upper.startswith("TEST:"):
             args = self._body_after(step, "TEST:") or "tests/ -q"
@@ -739,7 +1065,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             else:
                 cmd = args
             self._log(f"TEST {cmd}")
-            return self._run_shell(cmd)
+            output = self._run_shell(cmd)
+            self._emit_shell_exec(kind="TEST", cmd=cmd, output=output)
+            return output
 
         if upper.startswith("TODO:"):
             body = self._body_after(step, "TODO:")
@@ -828,7 +1156,9 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         targets = " ".join(f'"{self.root / f}"' for f in uniq[-5:])
         cmd = f"python -m py_compile {targets}"
         self._log(f"auto-verify: {cmd}")
-        return self._run_shell(cmd)
+        out = self._run_shell(cmd)
+        self._emit_verify_result(role="auto_verify", cmd=cmd, output=out)
+        return out
 
     def _recover_from_failure(self, step: str, err: Exception) -> None:
         self._log(f"[error] {err}")
@@ -852,7 +1182,23 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             f"mission · model={self.model} · mode={self.exec_mode} · "
             f"session={self.session_id}"
         )
-        self._session_write({"event": "start", "directive": self.directive, "model": self.model})
+        from cosmic_cli import __version__ as cosmic_version
+        from cosmic_cli.buildinfo import _provenance_commit
+
+        self._emit(
+            "mission.start",
+            directive=self.directive,
+            model=self.model,
+            exec_mode=self.exec_mode,
+            root=str(self.root),
+            helix=bool(self.use_helix),
+            verify_cmd=self.verify_cmd,
+            review=False,
+            max_steps=self.max_steps,
+            cosmic_version=cosmic_version,
+            cosmic_commit=_provenance_commit() or "",
+        )
+        self._emit("mission.status", status="running")
         final_result: Dict[str, Any] = {
             "directive": self.directive,
             "model": self.model,
@@ -876,13 +1222,13 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 head = next_step.splitlines()[0][:120]
                 self._log(f"→ {i + 1}/{self.max_steps} {head}")
                 upper = next_step.upper()
-                self._session_write(
-                {
-                    "event": "step",
-                    "n": i + 1,
-                    "action": redact(next_step[:2000]),
-                }
-            )
+                self._emit(
+                    "step.proposed",
+                    n=i + 1,
+                    action=action_verb(next_step),
+                    raw=redact(next_step[:2000]),
+                    head=action_head(next_step),
+                )
 
                 # Discovery thrash counter — probe-like only (not productive SHELL).
                 if _is_discovery_step(upper, next_step):
@@ -996,6 +1342,11 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         # Gated shell path on purpose: compass + L0 floor apply
                         # to the verifier like any other SHELL. No bare subprocess.
                         vc = self._run_shell(self.verify_cmd) or ""
+                        self._emit_verify_result(
+                            role="verify_cmd",
+                            cmd=self.verify_cmd,
+                            output=vc,
+                        )
                         head = vc.lstrip()
                         if head.startswith("[exit 0]"):
                             basis = "verifier"
@@ -1052,6 +1403,14 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     self.status = finish_status
                     if progress is not None and task is not None:
                         progress.update(task, completed=self.max_steps)
+                    self._emit(
+                        "finish.declared",
+                        n=self.steps_taken,
+                        status=finish_status,
+                        finish_basis=basis,
+                        synthesized=finish_synthesized,
+                        text=final_answer,
+                    )
                     return
 
                 if upper.startswith("PASS:"):
@@ -1091,6 +1450,16 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         )
                         if progress is not None and task is not None:
                             progress.update(task, completed=self.max_steps)
+                        compass = _compass_payload_from_blocked(output, next_step)
+                        if (
+                            compass
+                            and self._compass_emitted_n != self.steps_taken
+                        ):
+                            self._emit(
+                                "compass.verdict",
+                                n=self.steps_taken,
+                                **compass,
+                            )
                         return
                 except Exception as e:
                     self._recover_from_failure(next_step, e)
@@ -1130,17 +1499,21 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         )
         basis = final_result.get("finish_basis")
         self._append_echo(str(last), final_result["status"], basis)
-        end_event = {
-            "event": "end",
+        end_payload: Dict[str, Any] = {
             "status": final_result["status"],
             "edited": final_result["edited"],
             "model": self.model,
             "steps": self.steps_taken,
             "warnings": final_result["warnings"],
+            "outcome": str(last)[:2000],
         }
         if basis:
-            end_event["finish_basis"] = basis
-        self._session_write(end_event)
+            end_payload["finish_basis"] = basis
+        if final_result["status"] == "blocked":
+            end_payload["block_message"] = str(
+                final_result.get("block_message") or last
+            )[:2000]
+        self._emit("mission.end", **end_payload)
         return final_result
 
     def _synthesize_finish(self) -> str:
@@ -1273,6 +1646,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         *,
         expected_content: Optional[bytes] = None,
         match_input: Optional[str] = None,
+        op: str = "",
     ):
         """Authorize + execute mutation through gateway (checkpoint when available).
 
@@ -1281,8 +1655,11 @@ Do not READ .env, *.pem, id_rsa, or credential files.
 
         Returns executor result, or a [BLOCKED]/[Error] string.
         """
+        mutate_op = (op or action_type.value).upper()
         if self.exec_mode == "full":
-            return executor_fn()
+            result = executor_fn()
+            self._emit_fs_mutate_if_ok(mutate_op, path, result)
+            return result
 
         rules = self._load_policy_rules()
         if getattr(self, "_policy_load_error", None):
@@ -1309,7 +1686,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             )
             if receipt.checkpoint_manifest is not None:
                 since_ns = receipt.checkpoint_manifest.created_at_unix_ns
-            return self._gateway.execute_with_receipt(
+            result = self._gateway.execute_with_receipt(
                 receipt,
                 executor_fn,
                 observed_paths_fn=lambda: self._paths_touched_since(
@@ -1318,35 +1695,53 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 expected_content=expected_content,
                 verify_path=target if expected_content is not None else None,
             )
+            self._emit_fs_mutate_if_ok(mutate_op, path, result, receipt=receipt)
+            return result
         except PermissionError as e:
             msg = str(e)
             if "PAUSE" in msg and "token" in msg.lower():
                 decision = evaluate_rules(rules, action_type, corpus)
                 if decision.disposition == Disposition.PAUSE:
                     # Mint against binding commitment, not match corpus.
-                    import hashlib as _hl
-
-                    commitment = _hl.sha256(action_input.encode("utf-8")).hexdigest()
+                    commitment = hashlib.sha256(action_input.encode("utf-8")).hexdigest()
                     try:
                         tok = self._approval_mgr.mint_token(commitment)
                     except ApprovalStoreError as se:
                         return f"[BLOCKED] local policy PAUSE — cannot mint token: {se}"
+                    rid = _policy_rule_id(decision)
+                    summary = f"{action_type.value} {path}"
+                    blocked = (
+                        f"[BLOCKED] local policy PAUSE ({action_type.value}): {rid}. "
+                        f"Human approval required — "
+                        f"`cosmic-cli helix show-pause-token` (token not shown to model)."
+                    )
+                    self._emit_pause_minted(
+                        action_summary=summary,
+                        action_sha256=commitment,
+                        expires_at=_pause_expiry_iso(),
+                    )
                     self._human_pause_token(
                         tok,
                         channel=action_type.value,
                         action_sha=commitment,
                     )
-                    rid = (
-                        decision.matches[0].rule.rule_id
-                        if decision.matches
-                        else "policy"
+                    self._emit_compass_verdict(
+                        "PAUSE",
+                        tool_name=action_type.value,
+                        action_summary=summary,
+                        rule_matched=rid,
+                        reason=blocked,
                     )
-                    return (
-                        f"[BLOCKED] local policy PAUSE ({action_type.value}): {rid}. "
-                        f"Human approval required — "
-                        f"`cosmic-cli helix show-pause-token` (token not shown to model)."
-                    )
-            return f"[BLOCKED] local policy ({action_type.value}): {msg}"
+                    return blocked
+            blocked = f"[BLOCKED] local policy ({action_type.value}): {msg}"
+            if "WITNESS" in msg:
+                self._emit_compass_verdict(
+                    "WITNESS",
+                    tool_name=action_type.value,
+                    action_summary=f"{action_type.value} {path}",
+                    reason=blocked,
+                )
+            return blocked
         except Exception as e:
             return f"[Error] mutation gateway: {e}"
 
@@ -1378,14 +1773,18 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             if rules:
                 decision = evaluate_rules(rules, action_type, payload)
                 if decision.disposition == Disposition.WITNESS:
-                    rid = (
-                        decision.matches[0].rule.rule_id
-                        if decision.matches
-                        else "policy"
-                    )
-                    return (
+                    rid = _policy_rule_id(decision)
+                    blocked = (
                         f"[BLOCKED] local policy WITNESS ({kind}): {rid}"
                     )
+                    self._emit_compass_verdict(
+                        "WITNESS",
+                        tool_name=kind,
+                        action_summary=payload,
+                        rule_matched=rid,
+                        reason=blocked,
+                    )
+                    return blocked
                 if decision.disposition == Disposition.PAUSE:
                     if not self.approval_token_id:
                         try:
@@ -1397,31 +1796,48 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                                 f"[BLOCKED] local policy PAUSE ({kind}): "
                                 f"cannot mint token: {se}"
                             )
-                        rid = (
-                            decision.matches[0].rule.rule_id
-                            if decision.matches
-                            else "policy"
+                        rid = _policy_rule_id(decision)
+                        blocked = (
+                            f"[BLOCKED] local policy PAUSE ({kind}): {rid}. "
+                            f"Human approval required — use "
+                            f"`cosmic-cli helix show-pause-token` (token not "
+                            f"shown to model)."
+                        )
+                        self._emit_pause_minted(
+                            action_summary=payload,
+                            action_sha256=decision.evaluated_input_sha256,
+                            expires_at=_pause_expiry_iso(),
                         )
                         self._human_pause_token(
                             tok,
                             channel=kind,
                             action_sha=decision.evaluated_input_sha256,
                         )
-                        return (
-                            f"[BLOCKED] local policy PAUSE ({kind}): {rid}. "
-                            f"Human approval required — use "
-                            f"`cosmic-cli helix show-pause-token` (token not "
-                            f"shown to model)."
+                        self._emit_compass_verdict(
+                            "PAUSE",
+                            tool_name=kind,
+                            action_summary=payload,
+                            rule_matched=rid,
+                            reason=blocked,
                         )
+                        return blocked
                     try:
                         if not self._approval_mgr.validate(
                             self.approval_token_id,
                             decision.evaluated_input_sha256,
                         ):
-                            return (
+                            blocked = (
                                 f"[BLOCKED] local policy PAUSE ({kind}): "
                                 f"token invalid, expired, or already used"
                             )
+                            self._emit_compass_verdict(
+                                "PAUSE",
+                                tool_name=kind,
+                                action_summary=payload,
+                                rule_matched=_policy_rule_id(decision),
+                                reason=blocked,
+                            )
+                            return blocked
                     except ApprovalStoreError as se:
                         return (
                             f"[BLOCKED] local policy PAUSE ({kind}): "
@@ -1444,27 +1860,57 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                 hdec = helix_bridge.parse_witness(w)
                 cls = hdec.get("classification") or "OPEN"
                 if cls == "WITNESS":
-                    return (
+                    blocked = (
                         f"[BLOCKED] Helix compass WITNESS ({kind}): "
                         f"{hdec.get('reason') or 'denied'}"
                     )
+                    self._emit_compass_verdict(
+                        "WITNESS",
+                        tool_name=kind,
+                        action_summary=payload,
+                        reason=blocked,
+                    )
+                    return blocked
                 if cls == "PAUSE" and hdec.get("blocked", True):
                     tok = hdec.get("pending_token") or ""
+                    helix_sha = _helix_action_sha(hdec, payload)
+                    helix_pid = _helix_pending_id(hdec)
                     if tok and tok != "?":
+                        self._remember_helix_pause(
+                            tok, pending_id=helix_pid, action_sha256=helix_sha
+                        )
                         self._human_pause_token(
                             tok,
                             channel=f"helix-{kind}",
-                            action_sha=str(hdec.get("action_summary") or "")[:64],
+                            action_sha=helix_sha,
                         )
                     reason = hdec.get("reason") or "needs confirmation"
                     if tok and tok in str(reason):
                         reason = str(reason).replace(tok, "[token-redacted]")
-                    return (
+                    blocked = (
                         f"[BLOCKED] Helix compass PAUSE ({kind}): {reason}. "
                         f"Human approval required — "
                         f"`cosmic-cli helix show-pause-token` then confirm "
                         f"from a human seat (token not shown to model)."
                     )
+                    helix_exp = hdec.get("expires_at")
+                    if not helix_exp and isinstance(hdec.get("raw"), dict):
+                        helix_exp = hdec["raw"].get("expires_at")
+                    self._emit_pause_minted(
+                        action_summary=payload,
+                        action_sha256=helix_sha,
+                        expires_at=str(helix_exp) if helix_exp else None,
+                        pending_id=helix_pid,
+                        channel="helix",
+                    )
+                    self._emit_compass_verdict(
+                        "PAUSE",
+                        tool_name=kind,
+                        action_summary=payload,
+                        reason=blocked,
+                        extra_token=tok if tok not in ("", "?") else "",
+                    )
+                    return blocked
             except Exception as e:
                 # Fail-closed: never fall through to allow on witness transport /
                 # data-dir / parse errors (Claude re-fire + integration map step 0).
@@ -1480,18 +1926,41 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             and self.approval_token_id
         ):
             try:
-                if not self._approval_mgr.claim_once(
+                claimed = self._approval_mgr.claim_once(
                     self.approval_token_id, decision.evaluated_input_sha256
-                ):
-                    return (
-                        f"[BLOCKED] local policy PAUSE ({kind}): "
-                        f"token already consumed or invalid (exactly-once)"
-                    )
+                )
             except ApprovalStoreError as se:
                 return (
                     f"[BLOCKED] local policy PAUSE ({kind}): "
                     f"approval store error on claim: {se}"
                 )
+            if claimed:
+                self._emit_pause_resolved(
+                    "approved",
+                    action_summary=payload,
+                    action_sha256=decision.evaluated_input_sha256,
+                    by="operator",
+                )
+            else:
+                # claim_once is boolean; expired vs used/wrong/missing are
+                # not distinguishable without a new ApprovalManager API.
+                self._emit_pause_resolved(
+                    "invalid",
+                    action_summary=payload,
+                    action_sha256=decision.evaluated_input_sha256,
+                )
+                blocked = (
+                    f"[BLOCKED] local policy PAUSE ({kind}): "
+                    f"token already consumed or invalid (exactly-once)"
+                )
+                self._emit_compass_verdict(
+                    "PAUSE",
+                    tool_name=kind,
+                    action_summary=payload,
+                    rule_matched=_policy_rule_id(decision),
+                    reason=blocked,
+                )
+                return blocked
         return None
 
     def _run_shell(self, cmd: str) -> str:
