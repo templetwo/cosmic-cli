@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+import pytest
 
 from dataclasses import replace
 
@@ -268,3 +271,56 @@ def test_late_event_after_shutdown_does_not_crash():
     _run_pilot(app, body=body)
     app._on_bus_event(_step("S__A", 1, 1, "READ", "late.py"))
     app.apply_bus_event(_step("S__A", 1, 1, "READ", "late.py"))
+
+
+@pytest.mark.parametrize("decision", ["approved", "declined"])
+def test_operator_resolution_clears_worker_minted_pause(tmp_path, decision):
+    from cosmic_cli.gateway import ApprovalManager
+    from cosmic_cli.pause_authority import approve_pause
+
+    bus = LocalMissionBus()
+    manager = ApprovalManager(store_path=tmp_path / "approvals.json")
+    sha = "a" * 64
+    token = manager.mint_token(sha)
+    resolutions = []
+
+    def emit_resolution(choice, summary, action_sha256, **payload):
+        resolutions.append(choice)
+        bus.publish(_evt(
+            "gate.pause_resolved", "S__A", 3, decision=choice,
+            action_summary=summary, action_sha256=action_sha256, **payload,
+        ))
+
+    agent = SimpleNamespace(
+        _bus=bus, _approval_mgr=manager, _emit_pause_resolved=emit_resolution,
+    )
+
+    async def body(app, pilot):
+        app.agents_by_mission["S__A"] = agent
+        app._subscribe_agent(agent)
+        # Agent events arrive on a worker; the operator resolves on the UI thread.
+        for event in (
+            _start("S__A", "approval exercise"),
+            _evt("gate.pause_minted", "S__A", 1, action_sha256=sha,
+                 action_summary="printf exercise", channel="local"),
+            _evt("mission.end", "S__A", 2, status="blocked"),
+        ):
+            await asyncio.to_thread(bus.publish, event)
+        await pilot.pause()
+        assert len(app.board.pending_pauses) == 1
+        assert "printf exercise" in str(app.query_one("#pending").render())
+
+        # Keep the real helper, but stage only inside this test's temporary store.
+        with patch("cosmic_cli.tui.app.approve_pause", side_effect=lambda *a, **kw:
+                   approve_pause(*a, stage_path=tmp_path / "stage", **kw)):
+            app._decide_selected_pause(decision)
+            await pilot.pause()
+            assert app.board.pending_pauses == []
+            assert "printf exercise" not in str(app.query_one("#pending").render())
+            assert app.board.missions["S__A"].status == "blocked"
+            app._decide_selected_pause(decision)
+            assert resolutions == [decision]
+        assert manager.claim_once(token, sha) is (decision == "approved")
+        assert manager.claim_once(token, sha) is False
+
+    _run_pilot(DirectivesUI(testing=True), body=body)

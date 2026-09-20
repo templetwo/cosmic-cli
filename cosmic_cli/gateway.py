@@ -397,6 +397,22 @@ class ApprovalManager:
         finally:
             self._unlock_file(fh)
 
+    def token_is_spent(self, token_id: str) -> bool:
+        """Known used/expired credentials may be retired from operator staging.
+
+        Missing credentials are not evidence of expiry (e.g. a different store).
+        This does not authorize or consume an action.
+        """
+        fh = self._lock_file()
+        try:
+            self._load_unlocked()
+            tok = self._tokens.get(token_id)
+            if not tok:
+                return False
+            return bool(tok.get("used")) or time.time() > float(tok.get("expiry", 0))
+        finally:
+            self._unlock_file(fh)
+
     def claim_once(self, token_id: str, current_action_sha256: str) -> bool:
         """Transactional consume: CAS used=false→true under exclusive flock.
 

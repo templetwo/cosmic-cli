@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import replace
 from typing import Any, Callable, Dict, List, Optional
 
@@ -20,7 +21,7 @@ from cosmic_cli.pause_authority import (
     decline_pause,
 )
 from cosmic_cli.tui import format as fmt
-from cosmic_cli.tui.state import BoardState, Mission, PendingPause, apply_event
+from cosmic_cli.tui.state import BoardState, Mission, PendingPause, apply_event, pause_matches
 from cosmic_cli.tui.widgets import (
     DiffPeek,
     DirectiveBar,
@@ -345,7 +346,11 @@ class PilotApp(App):
         try:
             if not getattr(self, "is_running", False):
                 return
-            self.call_from_thread(self.apply_bus_event, event)
+            # Operator decisions publish synchronously on the UI thread.
+            if threading.get_ident() == self._thread_id:
+                self.apply_bus_event(event)
+            else:
+                self.call_from_thread(self.apply_bus_event, event)
         except Exception:
             return
 
@@ -377,15 +382,8 @@ class PilotApp(App):
         self._open_pause_modal(pause)
 
     def _pause_matching_event(self, rec: dict) -> Optional[PendingPause]:
-        sha = rec.get("action_sha256")
-        pending_id = rec.get("pending_id")
-        mission = rec.get("mission")
         for pause in self.board.pending_pauses:
-            if sha and pause.action_sha256 == sha:
-                return pause
-            if pending_id is not None and pause.pending_id == pending_id:
-                return pause
-            if mission and pause.mission_key == mission and pause.action_sha256:
+            if pause_matches(pause, rec):
                 return pause
         return None
 
@@ -487,6 +485,7 @@ class PilotApp(App):
                     handle.action_sha256,
                     by="operator",
                     pending_id=handle.pending_id,
+                    channel=handle.channel,
                 )
             if agent is not None and result.approval_token_id:
                 agent.approval_token_id = result.approval_token_id
@@ -505,6 +504,7 @@ class PilotApp(App):
                     handle.action_sha256,
                     by="operator",
                     pending_id=handle.pending_id,
+                    channel=handle.channel,
                 )
             try:
                 self.notify("declined — mission stays blocked")

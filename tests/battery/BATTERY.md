@@ -12,6 +12,11 @@ COSMIC_BATTERY_JSON=/tmp/r.json pytest tests/battery/ -q   # machine-readable
 
 ## Reading the output
 
+Install dependencies into a virtual environment and run the battery with that
+environment's Python. The subprocess isolation fixture redirects `HOME`, so
+dependencies installed with `pip install --user` may disappear; a missing
+dependency can abort the gate liveness canary before scoring begins.
+
 Every run prints an environment matrix and an **Attack Success Rate** table.
 
 ```

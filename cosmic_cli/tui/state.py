@@ -268,12 +268,16 @@ def _apply_pause_minted(state: BoardState, rec: Mapping[str, Any]) -> BoardState
     return replace(state, pending_pauses=pending)
 
 
-def _pause_match(pause: PendingPause, rec: Mapping[str, Any]) -> bool:
+def pause_matches(pause: PendingPause, rec: Mapping[str, Any]) -> bool:
+    mission = _mission_key(rec)
+    if mission and pause.mission_key != mission:
+        return False
+    if rec.get("channel") and pause.channel != rec["channel"]:
+        return False
     pending_id = rec.get("pending_id")
     sha = rec.get("action_sha256")
-    if pending_id is not None and pause.pending_id is not None:
-        if pending_id == pause.pending_id:
-            return True
+    if pending_id is not None:
+        return pending_id == pause.pending_id
     if sha and pause.action_sha256 and sha == pause.action_sha256:
         return True
     return False
@@ -282,7 +286,7 @@ def _pause_match(pause: PendingPause, rec: Mapping[str, Any]) -> bool:
 def _apply_pause_resolved(state: BoardState, rec: Mapping[str, Any]) -> BoardState:
     if rec.get("pending_id") is None and not rec.get("action_sha256"):
         return state
-    pending = [p for p in state.pending_pauses if not _pause_match(p, rec)]
+    pending = [p for p in state.pending_pauses if not pause_matches(p, rec)]
     if len(pending) == len(state.pending_pauses):
         return state
     return replace(state, pending_pauses=pending)

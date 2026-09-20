@@ -50,6 +50,39 @@ and appends the same record to the mission JSONL.
 
 Approve stages `operator_approval_token` and does not `claim_once`. Consume is the retry. Concurrent pauses require an explicit `action_sha256`; `last_pause_token.json` is not the selector.
 
+### Post-terminal gate decisions
+
+`mission.end` ends execution, not the lifetime of the mission's audit stream.
+A blocked run can return before the operator decides. Its later
+`gate.pause_resolved` event retains the mission/session envelope and continues
+the sequence, correlated with the pending gate by `action_sha256` and optional
+`pending_id`. Local gates do not require a `pending_id`.
+
+Readers must continue past `mission.end` to process these decisions. Resolving
+a gate clears the pending indicator; it does not change the terminal status,
+finish basis, or echo rollup. Approval stages an existing unused credential;
+it neither mints a new one nor executes the action. A fresh same-session retry
+has its own mission tape and consumes the credential on the execution path.
+`gate.pause_resolved` with `decision=approved` alone is not execution evidence.
+
+Gate matching is scoped to the mission and, when supplied, channel. An explicit
+`pending_id` must match exactly; a different id never falls back to an equal
+action hash. Without an id, readers use `action_sha256` within that scope.
+New resolution events include `channel`; old records without it remain readable.
+
+Helix decline is unavailable until a Helix rejection API is wired. The board
+disables that modal action and rejects the keyboard action without touching
+local approvals or emitting a false resolution. Esc leaves the gate pending.
+
+Local staging is removed after consumption or when an invalid attempt finds a
+known used/expired credential. Removal compares the credential under the same
+file lock as staging, preserving any newer approval. The invalid attempt stays
+blocked; a later run can request and await fresh operator approval. An unknown
+credential or a valid credential for another action is not automatically removed.
+An explicit token supplied by argument/environment still fails validation on
+replay. Mutations also refuse to mint another token while an invalid credential
+is supplied. No cleanup operation grants authority or retries execution.
+
 ## Dual-write / compatibility
 
 JSONL is dual-written for one minor version so pre-bus readers keep working.
