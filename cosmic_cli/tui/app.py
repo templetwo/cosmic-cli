@@ -15,6 +15,7 @@ from textual.widgets import Button, DataTable, Footer, Input, RichLog, Static
 from cosmic_cli import __version__, theme
 from cosmic_cli.pause_authority import (
     PauseHandle,
+    approve_helix_pending,
     approve_pause,
     decline_pause,
 )
@@ -408,9 +409,11 @@ class PilotApp(App):
         pending_id = pause.pending_id
         if pending_id is not None and not isinstance(pending_id, int):
             pending_id = None
+        channel = pause.channel if pause.channel in ("local", "helix", "gate") else "local"
         return PauseHandle(
             action_sha256=pause.action_sha256 or "",
             action_summary=pause.action_summary,
+            channel=channel,
             mission_id=pause.mission_key,
             pending_id=pending_id,
             expires_at=pause.expires_at,
@@ -446,19 +449,35 @@ class PilotApp(App):
     def _apply_pause_choice(self, choice: str | None, handle: PauseHandle) -> None:
         if choice not in ("approved", "declined"):
             return
-        mgr = self._approval_manager(handle)
-        kwargs = {"require_tty": not self.testing}
-        if mgr is not None:
-            kwargs["manager"] = mgr
-        if choice == "approved":
-            result = approve_pause(handle, **kwargs)
-        else:
-            result = decline_pause(handle, **kwargs)
         agent = (
             self.agents_by_mission.get(handle.mission_id)
             if handle.mission_id
             else None
         )
+        mgr = self._approval_manager(handle)
+        kwargs = {"require_tty": not self.testing}
+        if mgr is not None:
+            kwargs["manager"] = mgr
+        if choice == "approved" and handle.channel == "helix":
+            helix_tok = ""
+            getter = getattr(agent, "helix_pause_token", None) if agent else None
+            if callable(getter):
+                helix_tok = (
+                    getter(
+                        pending_id=handle.pending_id,
+                        action_sha256=handle.action_sha256,
+                    )
+                    or ""
+                )
+            result = approve_helix_pending(
+                handle,
+                token=helix_tok,
+                require_tty=not self.testing,
+            )
+        elif choice == "approved":
+            result = approve_pause(handle, **kwargs)
+        else:
+            result = decline_pause(handle, **kwargs)
         emit = getattr(agent, "_emit_pause_resolved", None) if agent else None
         if result.outcome == "approved":
             if callable(emit) and handle.action_sha256:

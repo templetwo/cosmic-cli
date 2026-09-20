@@ -73,6 +73,7 @@ class PendingPause:
     action_sha256: Optional[str] = None
     rule: Optional[str] = None
     expires_at: Optional[str] = None
+    channel: str = "local"
 
 
 @dataclass(frozen=True)
@@ -250,6 +251,9 @@ def _apply_compass(state: BoardState, rec: Mapping[str, Any]) -> BoardState:
 
 
 def _apply_pause_minted(state: BoardState, rec: Mapping[str, Any]) -> BoardState:
+    channel = rec.get("channel")
+    if channel not in ("local", "helix", "gate"):
+        channel = "local"
     pause = PendingPause(
         pending_id=rec.get("pending_id"),
         action_sha256=_opt_str(rec.get("action_sha256")),
@@ -257,6 +261,7 @@ def _apply_pause_minted(state: BoardState, rec: Mapping[str, Any]) -> BoardState
         rule=_opt_str(rec.get("rule") or rec.get("rule_matched")),
         mission_key=str(_mission_key(rec) or ""),
         expires_at=_opt_str(rec.get("expires_at")),
+        channel=channel,
     )
     pending = list(state.pending_pauses)
     pending.append(pause)

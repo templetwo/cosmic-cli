@@ -26,10 +26,14 @@ class _HelixRecordStub:
 @pytest.fixture(autouse=True)
 def _isolate_live_stores(tmp_path_factory, monkeypatch):
     import cosmic_cli.agents as agents
+    import cosmic_cli.pause_authority as pause_authority
 
     root = tmp_path_factory.mktemp("cosmic_live_stores")
     monkeypatch.setattr(agents, "ECHO_FILE", root / "echo.jsonl")
     monkeypatch.setattr(agents, "SESSION_DIR", root / "sessions")
+    monkeypatch.setattr(
+        pause_authority, "STAGE_PATH", root / "operator_approval_token"
+    )
     if agents.helix_bridge is not None:
         monkeypatch.setattr(agents.helix_bridge, "record", _HelixRecordStub())
     yield

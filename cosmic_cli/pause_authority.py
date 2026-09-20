@@ -30,6 +30,18 @@ PauseChannel = Literal["local", "gate", "helix"]
 STAGE_PATH = Path.home() / ".cosmic-cli" / "operator_approval_token"
 
 
+def load_staged_token(stage_path: Optional[Path] = None) -> Optional[str]:
+    """Read the one-retry stage file. Empty/missing → None. Never logs the value."""
+    path = stage_path if stage_path is not None else STAGE_PATH
+    try:
+        if not path.is_file():
+            return None
+        tok = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return tok or None
+
+
 @dataclass(frozen=True)
 class PauseHandle:
     """Bus/UI-safe. No token, no tok- prefix, no Helix hex credential."""
@@ -200,6 +212,60 @@ def decline_pause(
         handle=handle,
         by="operator",
         message="declined — mission stays blocked; no remint",
+    )
+
+
+def approve_helix_pending(
+    handle: PauseHandle,
+    *,
+    token: str,
+    confirm=None,
+    require_tty: bool = True,
+) -> PauseResolution:
+    """Helix-origin PAUSE: confirm_pending is the authority, not local store."""
+    ranked = _ranking("helix accept-pause", require_tty=require_tty)
+    if ranked:
+        return PauseResolution(
+            outcome="ranking_denied",
+            handle=handle,
+            message=ranked.message,
+        )
+    tok = (token or "").strip()
+    if not tok:
+        return PauseResolution(
+            outcome="not_found",
+            handle=handle,
+            message="no in-process Helix pending token for this action",
+        )
+    if confirm is None:
+        from cosmic_cli import helix_bridge
+
+        confirm = helix_bridge.confirm_pending
+    try:
+        result = confirm(tok)
+    except Exception as e:
+        return PauseResolution(
+            outcome="invalid",
+            handle=handle,
+            message=str(e),
+        )
+    inner = (result or {}).get("result") if isinstance(result, dict) else None
+    if not (
+        isinstance(result, dict)
+        and result.get("ok")
+        and isinstance(inner, dict)
+        and inner.get("ok")
+    ):
+        return PauseResolution(
+            outcome="invalid",
+            handle=handle,
+            message="Helix confirm_pending refused",
+        )
+    return PauseResolution(
+        outcome="approved",
+        handle=handle,
+        by="operator",
+        message="Helix pending confirmed — re-run the blocked action",
     )
 
 

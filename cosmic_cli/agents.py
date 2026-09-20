@@ -31,6 +31,7 @@ from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.rules import load_rules_from_markdown
 from cosmic_cli.bus import LocalMissionBus
+from cosmic_cli.pause_authority import load_staged_token
 from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
 from cosmic_cli.shell_guard import check_shell
 from cosmic_cli.events import (
@@ -276,9 +277,12 @@ class StargazerAgent:
         self.context_manager = ContextManager(root_dir=str(self.root))
         # Local policy kernel + gateway (avionics assembly 2026-07-15).
         # Helix compass remains the remote witness; this is the in-process door.
-        self.approval_token_id = approval_token_id or os.getenv(
-            "COSMIC_APPROVAL_TOKEN"
+        self.approval_token_id = (
+            approval_token_id
+            or os.getenv("COSMIC_APPROVAL_TOKEN")
+            or load_staged_token()
         )
+        self._helix_pause_tokens: Dict[Any, str] = {}
         try:
             self._approval_mgr = ApprovalManager()
         except ApprovalStoreError as e:
@@ -397,16 +401,43 @@ class StargazerAgent:
         if alias:
             self._session_write_raw(alias)
 
+    def helix_pause_token(
+        self,
+        *,
+        pending_id: Any = None,
+        action_sha256: Optional[str] = None,
+    ) -> Optional[str]:
+        """Privileged Helix pending token. Never copy onto bus or widgets."""
+        if pending_id is not None:
+            tok = self._helix_pause_tokens.get(("id", pending_id))
+            if tok:
+                return tok
+        if action_sha256:
+            return self._helix_pause_tokens.get(("sha", action_sha256))
+        return None
+
+    def _remember_helix_pause(
+        self, tok: str, *, pending_id: Any, action_sha256: str
+    ) -> None:
+        if not tok or tok == "?":
+            return
+        if pending_id is not None:
+            self._helix_pause_tokens[("id", pending_id)] = tok
+        if action_sha256:
+            self._helix_pause_tokens[("sha", action_sha256)] = tok
+
     def _emit_pause_minted(
         self,
         action_summary: str,
         action_sha256: str,
         expires_at: Optional[str] = None,
         pending_id: Any = None,
+        channel: str = "local",
     ) -> None:
         payload: Dict[str, Any] = {
             "action_summary": _redact_pause_text(action_summary),
             "action_sha256": action_sha256,
+            "channel": channel if channel in ("local", "helix", "gate") else "local",
         }
         if expires_at:
             payload["expires_at"] = expires_at
@@ -1842,11 +1873,16 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     return blocked
                 if cls == "PAUSE" and hdec.get("blocked", True):
                     tok = hdec.get("pending_token") or ""
+                    helix_sha = _helix_action_sha(hdec, payload)
+                    helix_pid = _helix_pending_id(hdec)
                     if tok and tok != "?":
+                        self._remember_helix_pause(
+                            tok, pending_id=helix_pid, action_sha256=helix_sha
+                        )
                         self._human_pause_token(
                             tok,
                             channel=f"helix-{kind}",
-                            action_sha=str(hdec.get("action_summary") or "")[:64],
+                            action_sha=helix_sha,
                         )
                     reason = hdec.get("reason") or "needs confirmation"
                     if tok and tok in str(reason):
@@ -1862,9 +1898,10 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                         helix_exp = hdec["raw"].get("expires_at")
                     self._emit_pause_minted(
                         action_summary=payload,
-                        action_sha256=_helix_action_sha(hdec, payload),
+                        action_sha256=helix_sha,
                         expires_at=str(helix_exp) if helix_exp else None,
-                        pending_id=_helix_pending_id(hdec),
+                        pending_id=helix_pid,
+                        channel="helix",
                     )
                     self._emit_compass_verdict(
                         "PAUSE",
