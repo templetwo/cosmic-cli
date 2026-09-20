@@ -31,7 +31,7 @@ from cosmic_cli.policy import ActionType, Disposition, evaluate_rules
 from cosmic_cli.principles import system_prompt_block
 from cosmic_cli.rules import load_rules_from_markdown
 from cosmic_cli.bus import LocalMissionBus
-from cosmic_cli.pause_authority import load_staged_token
+from cosmic_cli.pause_authority import load_staged_token, retire_staged_token
 from cosmic_cli.secrets import deny_read_message, is_sensitive_path, redact
 from cosmic_cli.shell_guard import check_shell
 from cosmic_cli.events import (
@@ -409,9 +409,7 @@ class StargazerAgent:
     ) -> Optional[str]:
         """Privileged Helix pending token. Never copy onto bus or widgets."""
         if pending_id is not None:
-            tok = self._helix_pause_tokens.get(("id", pending_id))
-            if tok:
-                return tok
+            return self._helix_pause_tokens.get(("id", pending_id))
         if action_sha256:
             return self._helix_pause_tokens.get(("sha", action_sha256))
         return None
@@ -454,11 +452,13 @@ class StargazerAgent:
         *,
         by: Optional[str] = None,
         pending_id: Any = None,
+        channel: str = "local",
     ) -> None:
         payload: Dict[str, Any] = {
             "decision": decision,
             "action_summary": _redact_pause_text(action_summary),
             "action_sha256": action_sha256,
+            "channel": channel,
         }
         if by:
             payload["by"] = by
@@ -1637,6 +1637,18 @@ Do not READ .env, *.pem, id_rsa, or credential files.
         except Exception:
             pass
 
+    def _retire_spent_stage(self) -> bool:
+        """Cleanup cannot grant authority or erase another operator's approval."""
+        token = self.approval_token_id
+        if not token:
+            return False
+        try:
+            if self._approval_mgr.token_is_spent(token):
+                return retire_staged_token(token)
+        except (OSError, ApprovalStoreError, ValueError):
+            logger.warning("could not retire stale approval stage; approval checks remain enforced")
+        return False
+
     def _run_mutation(
         self,
         action_type: ActionType,
@@ -1702,6 +1714,13 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             if "PAUSE" in msg and "token" in msg.lower():
                 decision = evaluate_rules(rules, action_type, corpus)
                 if decision.disposition == Disposition.PAUSE:
+                    if self.approval_token_id:
+                        retired = self._retire_spent_stage()
+                        recovery = (
+                            " Stale staged approval cleared; re-run to request fresh approval."
+                            if retired else " Stage a valid approval for this action before retrying."
+                        )
+                        return f"[BLOCKED] local policy ({action_type.value}): {msg}{recovery}"
                     # Mint against binding commitment, not match corpus.
                     commitment = hashlib.sha256(action_input.encode("utf-8")).hexdigest()
                     try:
@@ -1744,6 +1763,8 @@ Do not READ .env, *.pem, id_rsa, or credential files.
             return blocked
         except Exception as e:
             return f"[Error] mutation gateway: {e}"
+        finally:
+            self._retire_spent_stage()
 
     def _compass_gate(self, payload: str, *, kind: str = "SHELL") -> Optional[str]:
         """Single door for SHELL and CODE execution.
@@ -1826,10 +1847,13 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                             self.approval_token_id,
                             decision.evaluated_input_sha256,
                         ):
+                            retired = self._retire_spent_stage()
                             blocked = (
                                 f"[BLOCKED] local policy PAUSE ({kind}): "
                                 f"token invalid, expired, or already used"
                             )
+                            if retired:
+                                blocked += " Stale staged approval cleared; re-run to request fresh approval."
                             self._emit_compass_verdict(
                                 "PAUSE",
                                 tool_name=kind,
@@ -1935,6 +1959,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     f"approval store error on claim: {se}"
                 )
             if claimed:
+                self._retire_spent_stage()
                 self._emit_pause_resolved(
                     "approved",
                     action_summary=payload,
@@ -1942,6 +1967,7 @@ Do not READ .env, *.pem, id_rsa, or credential files.
                     by="operator",
                 )
             else:
+                self._retire_spent_stage()
                 # claim_once is boolean; expired vs used/wrong/missing are
                 # not distinguishable without a new ApprovalManager API.
                 self._emit_pause_resolved(

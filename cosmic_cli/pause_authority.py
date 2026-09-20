@@ -9,6 +9,8 @@ when more than one action is pending.
 from __future__ import annotations
 
 import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
@@ -24,6 +26,7 @@ PauseOutcome = Literal[
     "not_found",
     "ambiguous",
     "ranking_denied",
+    "unsupported",
 ]
 PauseChannel = Literal["local", "gate", "helix"]
 
@@ -40,6 +43,35 @@ def load_staged_token(stage_path: Optional[Path] = None) -> Optional[str]:
     except OSError:
         return None
     return tok or None
+
+
+@contextmanager
+def _stage_lock(path: Path):
+    """Serialize stage replacement and compare-and-remove across processes."""
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise ApprovalStoreError("approval staging requires file locking") from exc
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def retire_staged_token(token: str, stage_path: Optional[Path] = None) -> bool:
+    """Remove only this credential's stage; never erase a newer approval."""
+    if not token:
+        return False
+    path = stage_path if stage_path is not None else STAGE_PATH
+    with _stage_lock(path):
+        if load_staged_token(path) != token:
+            return False
+        path.unlink()
+        return True
 
 
 @dataclass(frozen=True)
@@ -68,16 +100,18 @@ class PauseResolution:
     approval_token_id: Optional[str] = None
 
 
-def write_stage_file(token: str, dest: Path = STAGE_PATH) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".tmp")
-    tmp.write_text(token + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(dest)
-    try:
-        os.chmod(dest, 0o600)
-    except OSError:
-        pass
+def write_stage_file(token: str, dest: Optional[Path] = None) -> None:
+    dest = dest if dest is not None else STAGE_PATH
+    with _stage_lock(dest):
+        # mkstemp creates mode 0600 before any credential bytes are written.
+        fd, name = tempfile.mkstemp(prefix=dest.name + ".", dir=dest.parent)
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(token + "\n")
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def _ranking(action: str, *, require_tty: bool) -> Optional[PauseResolution]:
@@ -127,7 +161,7 @@ def approve_pause(
     handle: PauseHandle,
     *,
     manager: Optional[ApprovalManager] = None,
-    stage_path: Path = STAGE_PATH,
+    stage_path: Optional[Path] = None,
     require_tty: bool = True,
     stage_file: bool = True,
 ) -> PauseResolution:
@@ -184,6 +218,13 @@ def decline_pause(
             outcome="ranking_denied",
             handle=handle,
             message=ranked.message,
+        )
+    if handle.channel == "helix":
+        return PauseResolution(
+            outcome="unsupported",
+            handle=handle,
+            message="Helix decline is unavailable; gate remains pending. "
+            "Close the dialog or let the approval expire.",
         )
     sha = (handle.action_sha256 or "").strip()
     if not sha:
@@ -273,7 +314,7 @@ def accept_pause_cli(
     query: str = "",
     *,
     manager: Optional[ApprovalManager] = None,
-    stage_path: Path = STAGE_PATH,
+    stage_path: Optional[Path] = None,
     require_tty: bool = True,
 ) -> PauseResolution:
     """CLI entry: unique pending sha, or an explicit sha/prefix in query."""

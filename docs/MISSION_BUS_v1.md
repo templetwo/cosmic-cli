@@ -65,6 +65,24 @@ it neither mints a new one nor executes the action. A fresh same-session retry
 has its own mission tape and consumes the credential on the execution path.
 `gate.pause_resolved` with `decision=approved` alone is not execution evidence.
 
+Gate matching is scoped to the mission and, when supplied, channel. An explicit
+`pending_id` must match exactly; a different id never falls back to an equal
+action hash. Without an id, readers use `action_sha256` within that scope.
+New resolution events include `channel`; old records without it remain readable.
+
+Helix decline is unavailable until a Helix rejection API is wired. The board
+disables that modal action and rejects the keyboard action without touching
+local approvals or emitting a false resolution. Esc leaves the gate pending.
+
+Local staging is removed after consumption or when an invalid attempt finds a
+known used/expired credential. Removal compares the credential under the same
+file lock as staging, preserving any newer approval. The invalid attempt stays
+blocked; a later run can request and await fresh operator approval. An unknown
+credential or a valid credential for another action is not automatically removed.
+An explicit token supplied by argument/environment still fails validation on
+replay. Mutations also refuse to mint another token while an invalid credential
+is supplied. No cleanup operation grants authority or retries execution.
+
 ## Dual-write / compatibility
 
 JSONL is dual-written for one minor version so pre-bus readers keep working.

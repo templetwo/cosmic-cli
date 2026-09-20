@@ -64,12 +64,15 @@ class PauseApproveScreen(ModalScreen[str]):
             yield Static(summary, id="pause_summary")
             yield Static(f"rule: {rule}", id="pause_rule")
             yield Static(
-                "token never shown to the model · TTY L2 only",
+                "token never shown to the model · TTY L2 only"
+                + ("\nHelix decline unavailable; Esc leaves the gate pending."
+                   if self.handle.channel == "helix" else ""),
                 id="pause_hint",
             )
             with Horizontal(id="pause_buttons"):
                 yield Button("y APPROVE", variant="primary", id="pause_approve")
-                yield Button("n DECLINE", variant="default", id="pause_decline")
+                yield Button("n DECLINE", variant="default", id="pause_decline",
+                             disabled=self.handle.channel == "helix")
 
     def action_cancel_pause(self) -> None:
         self.dismiss(None)
@@ -78,10 +81,12 @@ class PauseApproveScreen(ModalScreen[str]):
         self.dismiss("approved")
 
     def action_decline_pause(self) -> None:
+        if self.handle.channel == "helix":
+            return
         self.dismiss("declined")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "pause_approve":
             self.dismiss("approved")
         elif event.button.id == "pause_decline":
-            self.dismiss("declined")
+            self.action_decline_pause()
