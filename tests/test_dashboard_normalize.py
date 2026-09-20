@@ -169,6 +169,27 @@ def test_v1_dual_write_one_row_per_step(dashboard_mod):
     assert all("finish_basis" not in r for r in rows)
 
 
+@pytest.mark.parametrize("decision", ["approved", "declined"])
+def test_gate_resolution_after_end_preserves_terminal(dashboard_mod, decision):
+    tape = _v1_dual_write()
+    tape = [e for e in tape if e["event"] != "finish.declared"]
+    for event in tape:
+        if event["event"] in ("mission.end", "end"):
+            event["status"] = "blocked"
+            event.pop("finish_basis", None)
+    before = dashboard_mod.session_terminal(tape)
+    steps = dashboard_mod.session_step_rows(tape)
+    tape.append({
+        "v": 1, "event": "gate.pause_resolved", "ts": "t6",
+        "session": "S", "mission": "S__T", "seq": 6,
+        "action_sha256": "a" * 64, "decision": decision, "by": "operator",
+    })
+    assert dashboard_mod.session_terminal(tape) == before
+    assert before["status"] == "blocked"
+    assert "finish_basis" not in before
+    assert dashboard_mod.session_step_rows(tape) == steps
+
+
 def test_dual_written_step_proposed_and_compat_step_is_one(dashboard_mod):
     rows = dashboard_mod.session_step_rows(
         [

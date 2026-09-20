@@ -267,7 +267,7 @@ The user supplied dual-write for one minor version or reader-first support as al
 1. `verified` requires `finish_basis=verifier` and bound, successful operator-verifier evidence. Synthesized finish is needs_review; auto_verify cannot certify a mission.
 2. Non-finish statuses omit finish_basis; finished canonical terminal records carry it. Legacy normalization never invents a basis.
 3. Sequence is monotonic per mission; identities do not collide for simultaneous starts or reruns.
-4. Proposed lifecycle rule: mission.end is the last non-log event of that mission. Resolve the review/undo conflict below before finalizing tests.
+4. `mission.end` is the last execution event, not necessarily the last audit event. A later operator decision may append `gate.pause_resolved` for that mission's pending gate, correlated by `action_sha256` and optional `pending_id`, with sequence continuing. This does not reopen the mission or rewrite its terminal status/echo; a retry has a new mission identity. See [the implemented v1 contract](MISSION_BUS_v1.md#post-terminal-gate-decisions). Review/undo semantics remain a later design question.
 5. Echo status and basis presence match the canonical end used to derive it; repeated delivery/replay cannot create duplicate rollups.
 6. PAUSE bodies and sensitive-store paths never appear in emitted or persisted data. Test actual seeded credentials and nested/free-text fields, not just a broad token-looking regex.
 7. At most one unresolved pause mint per bound action in the relevant mission/session approval scope; resolution permits the intended next lifecycle, not a retry mint storm.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import replace
 from typing import Any, Callable, Dict, List, Optional
 
@@ -345,7 +346,11 @@ class PilotApp(App):
         try:
             if not getattr(self, "is_running", False):
                 return
-            self.call_from_thread(self.apply_bus_event, event)
+            # Operator decisions publish synchronously on the UI thread.
+            if threading.get_ident() == self._thread_id:
+                self.apply_bus_event(event)
+            else:
+                self.call_from_thread(self.apply_bus_event, event)
         except Exception:
             return
 

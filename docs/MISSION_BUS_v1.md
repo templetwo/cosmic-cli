@@ -50,6 +50,21 @@ and appends the same record to the mission JSONL.
 
 Approve stages `operator_approval_token` and does not `claim_once`. Consume is the retry. Concurrent pauses require an explicit `action_sha256`; `last_pause_token.json` is not the selector.
 
+### Post-terminal gate decisions
+
+`mission.end` ends execution, not the lifetime of the mission's audit stream.
+A blocked run can return before the operator decides. Its later
+`gate.pause_resolved` event retains the mission/session envelope and continues
+the sequence, correlated with the pending gate by `action_sha256` and optional
+`pending_id`. Local gates do not require a `pending_id`.
+
+Readers must continue past `mission.end` to process these decisions. Resolving
+a gate clears the pending indicator; it does not change the terminal status,
+finish basis, or echo rollup. Approval stages an existing unused credential;
+it neither mints a new one nor executes the action. A fresh same-session retry
+has its own mission tape and consumes the credential on the execution path.
+`gate.pause_resolved` with `decision=approved` alone is not execution evidence.
+
 ## Dual-write / compatibility
 
 JSONL is dual-written for one minor version so pre-bus readers keep working.
